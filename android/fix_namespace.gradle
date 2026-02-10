@@ -1,0 +1,52 @@
+subprojects {
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin("com.android.library") || project.plugins.hasPlugin("com.android.application")) {
+            def android = project.extensions.findByName("android")
+            if (android != null) {
+                // FIX 1: Namespace for AGP 8.0+
+                if (android.namespace == null) {
+                    def groupName = project.group?.toString()
+                    if (groupName == null || groupName.isEmpty() || groupName == "android") {
+                        groupName = "com.example.${project.name}"
+                    }
+                    android.namespace = groupName
+                }
+                
+                // FIX 2: Force Compile SDK 35 (Global requirement for camerax)
+                android.compileSdkVersion = 35
+                
+                // FIX 3: Hybrid Java/Kotlin Target Logic
+                // dchs_motion_sensors seems locked to Kotlin 1.8, so we match Java to 1.8 for it.
+                // camerax requires Java 17 (source 9+).
+                def targetJava = JavaVersion.VERSION_17
+                def targetString = "17"
+                
+                if (project.name == "dchs_motion_sensors") {
+                     targetJava = JavaVersion.VERSION_1_8
+                     targetString = "1.8"
+                     println "Forcing Java 1.8 for ${project.name} to match Kotlin 1.8"
+                } else {
+                     println "Forcing Java 17 for ${project.name}"
+                }
+
+                android.compileOptions {
+                    sourceCompatibility = targetJava
+                    targetCompatibility = targetJava
+                }
+                
+                // Apply to Kotlin tasks
+                project.tasks.each { task ->
+                    if (task.name.startsWith("compile") && task.name.contains("Kotlin")) {
+                        try {
+                            if (task.hasProperty("kotlinOptions")) {
+                               task.kotlinOptions.jvmTarget = targetString
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
