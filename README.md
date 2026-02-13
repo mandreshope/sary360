@@ -126,10 +126,10 @@ Le tout dans un **isolate séparé** pour ne pas bloquer l'UI.
 |-----------|----------|
 | **Framework** | Flutter 3.10+ |
 | **State Management** | flutter_riverpod ^2.6.1 |
-| **Caméra** | camera ^0.11.0 |
+| **Caméra** | camera ^0.10.6 |
 | **Capteurs** | sensors_plus ^6.0.1 |
 | **Traitement Image** | image ^4.3.0 (pur Dart) |
-| **Viewer 360°** | panorama_viewer ^0.2.2 |
+| **Viewer 360°** | flutter_cube ^0.1.1 (forked locally), dchs_motion_sensors ^2.0.1 |
 | **Permissions** | permission_handler ^11.3.1 |
 | **Storage** | path_provider ^2.1.4 |
 
