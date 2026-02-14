@@ -467,7 +467,11 @@ class CameraService {
         if (_nearTargetFrames >= _requiredNearFrames && !_confirmedNear) {
           _confirmedNear = true;
           onTargetProximityChanged?.call(currentTarget!, true);
-          // ★ Capture automatique !
+        }
+
+        // ★ Capture automatique UNIQUEMENT si parfaitement aligné (< 4°)
+        // Cela évite de capturer dès qu'on entre dans la zone verte (18°)
+        if (_confirmedNear && _isAlignedForCapture(currentTarget!)) {
           onAutoCapture?.call();
         }
       } else {
@@ -491,8 +495,6 @@ class CameraService {
 
     final elevationDiff = (_currentOrientation.pitch - target.elevation).abs();
 
-    // Tolérance plus large pour les rangées près des pôles
-    // (car les points sont plus proches en longitude)
     // Tolérance adaptative selon l'élévation
     // Plus on est proche des pôles, plus les méridiens convergent
     double azTolerance = AppConstants.angleTolerance;
@@ -509,6 +511,22 @@ class CameraService {
 
     return azimuthDiff.abs() < azTolerance &&
         elevationDiff < AppConstants.elevationTolerance;
+  }
+
+  /// Vérifie l'alignment strict (< 4°) pour déclencher la capture automatique
+  bool _isAlignedForCapture(CaptureTarget target) {
+    double azimuthDiff = (_currentOrientation.azimuth - target.azimuth);
+    if (azimuthDiff > 180) azimuthDiff -= 360;
+    while (azimuthDiff < -180) azimuthDiff += 360;
+
+    final elevationDiff = (_currentOrientation.pitch - target.elevation).abs();
+
+    // Au Zénith/Nadir (>80°), l'azimut est toujours bon
+    if (target.elevation.abs() > 80) {
+      azimuthDiff = 0;
+    }
+
+    return azimuthDiff.abs() < 4.0 && elevationDiff < 4.0;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
