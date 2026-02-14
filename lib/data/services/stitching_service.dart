@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
@@ -7,16 +8,29 @@ import '../../core/constants/app_constants.dart';
 import '../../domain/models/captured_photo.dart';
 import '../../domain/models/panorama.dart';
 
-/// Paramètres pour l'isolate de stitching
+/// Paramètres pour l'isolate de stitching sphérique
 class StitchingParams {
-  final List<String> photoPaths;
+  final List<PhotoData> photos;
   final String outputPath;
   final SendPort sendPort;
 
   const StitchingParams({
-    required this.photoPaths,
+    required this.photos,
     required this.outputPath,
     required this.sendPort,
+  });
+}
+
+/// Données sérialisables d'une photo (pour l'isolate)
+class PhotoData {
+  final String path;
+  final double azimuth;
+  final double elevation;
+
+  const PhotoData({
+    required this.path,
+    required this.azimuth,
+    required this.elevation,
   });
 }
 
@@ -35,10 +49,9 @@ class StitchingResult {
   });
 }
 
-/// Service de stitching offline des images
+/// Service de stitching sphérique - assemble en projection équirectangulaire
 class StitchingService {
-  /// Assemble les photos en panorama 360° (méthode simplifiée offline)
-  /// Cette méthode utilise un isolate pour ne pas bloquer l'UI
+  /// Assemble les photos en panorama sphérique 360°
   Future<Panorama> stitchPanorama(
     List<CapturedPhoto> photos, {
     Function(double)? onProgress,
@@ -47,10 +60,8 @@ class StitchingService {
       throw Exception('Aucune photo à assembler');
     }
 
-    // Créer le port de communication
     final receivePort = ReceivePort();
 
-    // Préparer le chemin de sortie
     final appDir = await getApplicationDocumentsDirectory();
     final panoramaDir = Directory(
       '${appDir.path}/${AppConstants.panoramasFolder}',
@@ -62,22 +73,30 @@ class StitchingService {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final outputPath = '${panoramaDir.path}/panorama_$timestamp.jpg';
 
-    // Lancer l'isolate
+    // Convertir en données sérialisables pour l'isolate
+    final photoDataList = photos
+        .map(
+          (p) => PhotoData(
+            path: p.path,
+            azimuth: p.azimuth,
+            elevation: p.elevation,
+          ),
+        )
+        .toList();
+
     await Isolate.spawn(
       _stitchInIsolate,
       StitchingParams(
-        photoPaths: photos.map((p) => p.path).toList(),
+        photos: photoDataList,
         outputPath: outputPath,
         sendPort: receivePort.sendPort,
       ),
     );
 
-    // Écouter les résultats
     StitchingResult? finalResult;
     await for (final result in receivePort) {
       if (result is StitchingResult) {
         onProgress?.call(result.progress);
-
         if (result.success || result.error != null) {
           finalResult = result;
           receivePort.close();
@@ -92,7 +111,6 @@ class StitchingService {
       );
     }
 
-    // Créer l'objet Panorama
     return Panorama(
       id: timestamp.toString(),
       name: 'Panorama ${DateTime.now().toString().split('.')[0]}',
@@ -103,30 +121,23 @@ class StitchingService {
     );
   }
 
-  /// Fonction exécutée dans l'isolate
+  /// Stitching sphérique dans un isolate
   static Future<void> _stitchInIsolate(StitchingParams params) async {
     try {
-      final photos = params.photoPaths;
+      final photos = params.photos;
       final outputPath = params.outputPath;
       final sendPort = params.sendPort;
 
-      // Charger et traiter chaque image
-      final processedImages = <img.Image>[];
-
+      // Phase 1: Charger et redimensionner toutes les images
+      final List<_LoadedPhoto> loadedPhotos = [];
       for (int i = 0; i < photos.length; i++) {
-        // Mise à jour de la progression
         sendPort.send(
-          StitchingResult(
-            success: false,
-            progress: (i / photos.length) * 0.7, // 70% pour le chargement
-          ),
+          StitchingResult(success: false, progress: (i / photos.length) * 0.5),
         );
 
-        // Charger l'image
-        final file = File(photos[i]);
+        final file = File(photos[i].path);
         final bytes = await file.readAsBytes();
         final image = img.decodeImage(bytes);
-
         if (image == null) {
           sendPort.send(
             StitchingResult(
@@ -137,44 +148,35 @@ class StitchingService {
           return;
         }
 
-        // Redimensionner pour performance
-        final resized = _resizeImage(image);
-
-        // Recadrer au centre pour minimiser la distorsion
-        final cropped = _cropCenter(resized);
-
-        processedImages.add(cropped);
+        // Redimensionner
+        final resized = _resizeImage(image, 800);
+        loadedPhotos.add(
+          _LoadedPhoto(
+            image: resized,
+            azimuth: photos[i].azimuth,
+            elevation: photos[i].elevation,
+          ),
+        );
       }
 
-      // Mettre à jour la progression
-      sendPort.send(
-        const StitchingResult(
-          success: false,
-          progress: 0.8, // 80%
-        ),
-      );
+      sendPort.send(const StitchingResult(success: false, progress: 0.6));
 
-      // Assembler horizontalement avec chevauchement
-      final panorama = _concatenateHorizontal(processedImages);
+      // Phase 2: Projeter sur une image équirectangulaire
+      final equirect = _projectToEquirectangular(loadedPhotos);
 
-      // Équilibrer les couleurs (simple correction)
-      final balanced = _balanceColors(panorama);
+      sendPort.send(const StitchingResult(success: false, progress: 0.85));
 
-      // Mettre à jour la progression
-      sendPort.send(
-        const StitchingResult(
-          success: false,
-          progress: 0.95, // 95%
-        ),
-      );
+      // Phase 3: Post-traitement
+      final balanced = _balanceColors(equirect);
 
-      // Sauvegarder le résultat
+      sendPort.send(const StitchingResult(success: false, progress: 0.95));
+
+      // Phase 4: Sauvegarder
       final outputFile = File(outputPath);
       await outputFile.writeAsBytes(
         img.encodeJpg(balanced, quality: AppConstants.jpegQuality),
       );
 
-      // Envoyer le résultat final
       sendPort.send(
         StitchingResult(success: true, panoramaPath: outputPath, progress: 1.0),
       );
@@ -185,14 +187,176 @@ class StitchingService {
     }
   }
 
-  /// Redimensionne l'image tout en gardant l'aspect ratio
-  static img.Image _resizeImage(img.Image image) {
-    if (image.width > AppConstants.maxImageWidth) {
+  /// Projette toutes les photos sur une image équirectangulaire
+  static img.Image _projectToEquirectangular(List<_LoadedPhoto> photos) {
+    final int outW = AppConstants.equirectWidth;
+    final int outH = AppConstants.equirectHeight;
+    final equirect = img.Image(width: outW, height: outH);
+
+    // Remplir de noir
+    for (int y = 0; y < outH; y++) {
+      for (int x = 0; x < outW; x++) {
+        equirect.setPixel(x, y, img.ColorRgba8(0, 0, 0, 255));
+      }
+    }
+
+    // Poids pour le blending entre photos qui se chevauchent
+    final weightMap = List.generate(outH, (_) => List.filled(outW, 0.0));
+    final rMap = List.generate(outH, (_) => List.filled(outW, 0.0));
+    final gMap = List.generate(outH, (_) => List.filled(outW, 0.0));
+    final bMap = List.generate(outH, (_) => List.filled(outW, 0.0));
+
+    // FOV estimé de la caméra (en degrés)
+    const double hFov = 65.0;
+    const double vFov = 50.0;
+    final double hFovRad = hFov * math.pi / 180;
+    final double vFovRad = vFov * math.pi / 180;
+
+    for (final photo in photos) {
+      final int imgW = photo.image.width;
+      final int imgH = photo.image.height;
+      final double azRad = photo.azimuth * math.pi / 180;
+      final double elRad = photo.elevation * math.pi / 180;
+
+      // Pour chaque pixel de la photo source, calculer où il se projette
+      // dans l'image équirectangulaire
+      for (int py = 0; py < imgH; py++) {
+        for (int px = 0; px < imgW; px++) {
+          // Coordonnées normalisées dans la photo (-0.5 à 0.5)
+          final double nx = (px / imgW) - 0.5;
+          final double ny = (py / imgH) - 0.5;
+
+          // Angles dans le repère de la caméra
+          final double localAz = nx * hFovRad;
+          final double localEl = -ny * vFovRad;
+
+          // Transformer en coordonnées sphériques globales
+          // Rotation autour de l'axe vertical (azimut) puis horizontal (élévation)
+          final double cosLocalEl = math.cos(localEl);
+          final double sinLocalEl = math.sin(localEl);
+          final double cosLocalAz = math.cos(localAz);
+          final double sinLocalAz = math.sin(localAz);
+
+          // Vecteur direction dans le repère caméra
+          double dx = cosLocalEl * sinLocalAz;
+          double dy = sinLocalEl;
+          double dz = cosLocalEl * cosLocalAz;
+
+          // Rotation par l'élévation de la caméra (autour de l'axe X)
+          final double cosEl = math.cos(elRad);
+          final double sinEl = math.sin(elRad);
+          final double dy2 = dy * cosEl - dz * sinEl;
+          final double dz2 = dy * sinEl + dz * cosEl;
+
+          // Rotation par l'azimut de la caméra (autour de l'axe Y)
+          final double cosAz = math.cos(azRad);
+          final double sinAz = math.sin(azRad);
+          final double dx3 = dx * cosAz + dz2 * sinAz;
+          final double dz3 = -dx * sinAz + dz2 * cosAz;
+
+          // Convertir en latitude/longitude
+          final double r = math.sqrt(dx3 * dx3 + dy2 * dy2 + dz3 * dz3);
+          final double lat = math.asin((dy2 / r).clamp(-1.0, 1.0));
+          double lon = math.atan2(dx3, dz3);
+
+          // Convertir en coordonnées pixel sur l'équirectangulaire
+          // lon: -π à +π → 0 à outW
+          // lat: -π/2 à +π/2 → outH à 0
+          final int eqX = ((lon / math.pi + 1) * 0.5 * outW).round() % outW;
+          final int eqY = ((0.5 - lat / math.pi) * outH).round().clamp(
+            0,
+            outH - 1,
+          );
+
+          // Poids basé sur la distance au centre de l'image
+          // (les bords sont moins fiables à cause de la distorsion)
+          final double distFromCenter = math.sqrt(nx * nx + ny * ny) / 0.7071;
+          final double weight = math.max(
+            0.0,
+            1.0 - distFromCenter * distFromCenter,
+          );
+
+          if (weight > 0.01) {
+            final pixel = photo.image.getPixel(px, py);
+            rMap[eqY][eqX] += pixel.r * weight;
+            gMap[eqY][eqX] += pixel.g * weight;
+            bMap[eqY][eqX] += pixel.b * weight;
+            weightMap[eqY][eqX] += weight;
+          }
+        }
+      }
+    }
+
+    // Normaliser par les poids
+    for (int y = 0; y < outH; y++) {
+      for (int x = 0; x < outW; x++) {
+        if (weightMap[y][x] > 0) {
+          final w = weightMap[y][x];
+          final r = (rMap[y][x] / w).round().clamp(0, 255);
+          final g = (gMap[y][x] / w).round().clamp(0, 255);
+          final b = (bMap[y][x] / w).round().clamp(0, 255);
+          equirect.setPixel(x, y, img.ColorRgba8(r, g, b, 255));
+        }
+      }
+    }
+
+    // Remplir les trous par interpolation simple
+    _fillHoles(equirect, weightMap);
+
+    return equirect;
+  }
+
+  /// Remplit les pixels non couverts par interpolation des voisins
+  static void _fillHoles(img.Image image, List<List<double>> weightMap) {
+    final int w = image.width;
+    final int h = image.height;
+    const int kernelSize = 5;
+
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        if (weightMap[y][x] > 0) continue;
+
+        double sumR = 0, sumG = 0, sumB = 0, sumW = 0;
+        for (int ky = -kernelSize; ky <= kernelSize; ky++) {
+          for (int kx = -kernelSize; kx <= kernelSize; kx++) {
+            final int nx = (x + kx) % w;
+            final int ny = (y + ky).clamp(0, h - 1);
+            if (weightMap[ny][nx] > 0) {
+              final dist = math.sqrt((kx * kx + ky * ky).toDouble());
+              final weight = 1.0 / (1.0 + dist);
+              final pixel = image.getPixel(nx, ny);
+              sumR += pixel.r * weight;
+              sumG += pixel.g * weight;
+              sumB += pixel.b * weight;
+              sumW += weight;
+            }
+          }
+        }
+
+        if (sumW > 0) {
+          image.setPixel(
+            x,
+            y,
+            img.ColorRgba8(
+              (sumR / sumW).round().clamp(0, 255),
+              (sumG / sumW).round().clamp(0, 255),
+              (sumB / sumW).round().clamp(0, 255),
+              255,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  /// Redimensionne une image
+  static img.Image _resizeImage(img.Image image, int maxWidth) {
+    if (image.width > maxWidth) {
       final aspectRatio = image.height / image.width;
-      final newHeight = (AppConstants.maxImageWidth * aspectRatio).round();
+      final newHeight = (maxWidth * aspectRatio).round();
       return img.copyResize(
         image,
-        width: AppConstants.maxImageWidth,
+        width: maxWidth,
         height: newHeight,
         interpolation: img.Interpolation.linear,
       );
@@ -200,129 +364,13 @@ class StitchingService {
     return image;
   }
 
-  /// Recadre l'image au centre (élimine les bords pour minimiser distorsion)
-  static img.Image _cropCenter(img.Image image) {
-    final cropWidth = (image.width * 0.85).round(); // Garder 85% au centre
-    final cropHeight = image.height;
-    final x = ((image.width - cropWidth) / 2).round();
-
-    return img.copyCrop(
-      image,
-      x: x,
-      y: 0,
-      width: cropWidth,
-      height: cropHeight,
-    );
-  }
-
-  /// Concatène les images horizontalement avec gestion du chevauchement
-  static img.Image _concatenateHorizontal(List<img.Image> images) {
-    if (images.isEmpty) {
-      throw Exception('Aucune image à concaténer');
-    }
-
-    // Calculer la largeur finale
-    final overlap = AppConstants.overlapPixels;
-    final totalWidth =
-        images.fold<int>(0, (sum, img) => sum + img.width) -
-        (overlap * (images.length - 1));
-
-    // Trouver la hauteur maximale
-    final maxHeight = images.fold<int>(
-      0,
-      (max, img) => img.height > max ? img.height : max,
-    );
-
-    // Créer l'image panorama
-    final panorama = img.Image(width: totalWidth, height: maxHeight);
-
-    // Coller les images avec chevauchement et blending
-    int xOffset = 0;
-    for (int i = 0; i < images.length; i++) {
-      final currentImage = images[i];
-
-      if (i == 0) {
-        // Première image : copie simple
-        img.compositeImage(
-          panorama,
-          currentImage,
-          dstX: 0,
-          dstY: (maxHeight - currentImage.height) ~/ 2,
-        );
-      } else {
-        // Images suivantes : blend dans la zone de chevauchement
-        _blendImages(
-          panorama,
-          currentImage,
-          xOffset - overlap,
-          (maxHeight - currentImage.height) ~/ 2,
-          overlap,
-        );
-      }
-
-      xOffset += currentImage.width - overlap;
-    }
-
-    return panorama;
-  }
-
-  /// Blend deux images dans la zone de chevauchement
-  static void _blendImages(
-    img.Image dst,
-    img.Image src,
-    int dstX,
-    int dstY,
-    int overlapWidth,
-  ) {
-    for (int y = 0; y < src.height; y++) {
-      for (int x = 0; x < src.width; x++) {
-        final targetX = dstX + x;
-        final targetY = dstY + y;
-
-        if (targetX < 0 ||
-            targetX >= dst.width ||
-            targetY < 0 ||
-            targetY >= dst.height) {
-          continue;
-        }
-
-        final srcPixel = src.getPixel(x, y);
-
-        // Si on est dans la zone de chevauchement
-        if (x < overlapWidth) {
-          // Calculer le ratio de blending (0 = 100% ancienne, 1 = 100% nouvelle)
-          final blendRatio = x / overlapWidth;
-          final dstPixel = dst.getPixel(targetX, targetY);
-
-          // Blending linéaire
-          final blended = _blendPixels(dstPixel, srcPixel, blendRatio);
-          dst.setPixel(targetX, targetY, blended);
-        } else {
-          // Hors de la zone de chevauchement : copie simple
-          dst.setPixel(targetX, targetY, srcPixel);
-        }
-      }
-    }
-  }
-
-  /// Blend deux pixels avec un ratio donné
-  static img.Color _blendPixels(img.Pixel p1, img.Pixel p2, double ratio) {
-    final r = (p1.r * (1 - ratio) + p2.r * ratio).toInt().clamp(0, 255);
-    final g = (p1.g * (1 - ratio) + p2.g * ratio).toInt().clamp(0, 255);
-    final b = (p1.b * (1 - ratio) + p2.b * ratio).toInt().clamp(0, 255);
-    final a = (p1.a * (1 - ratio) + p2.a * ratio).toInt().clamp(0, 255);
-
-    return img.ColorRgba8(r, g, b, a);
-  }
-
-  /// Balance simple des couleurs pour uniformiser le panorama
+  /// Balance des couleurs
   static img.Image _balanceColors(img.Image image) {
-    // Appliquer une légère normalisation pour équilibrer les couleurs
     return img.adjustColor(
       image,
-      contrast: 1.05,
-      saturation: 1.1,
-      brightness: 1.02,
+      contrast: 1.03,
+      saturation: 1.05,
+      brightness: 1.01,
     );
   }
 
@@ -335,8 +383,20 @@ class StitchingService {
         photoDir.deleteSync(recursive: true);
       }
     } catch (e) {
-      // ignore: avoid_print
-      print('Erreur lors du nettoyage des fichiers temporaires: $e');
+      // Silently fail
     }
   }
+}
+
+/// Photo chargée en mémoire avec ses métadonnées
+class _LoadedPhoto {
+  final img.Image image;
+  final double azimuth;
+  final double elevation;
+
+  const _LoadedPhoto({
+    required this.image,
+    required this.azimuth,
+    required this.elevation,
+  });
 }

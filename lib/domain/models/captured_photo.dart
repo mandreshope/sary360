@@ -1,28 +1,45 @@
-/// Représente une photo capturée pour le panorama
+/// Représente une photo capturée pour le panorama sphérique
 class CapturedPhoto {
   final String path;
-  final double rotationAngle; // Angle de rotation au moment de la capture
+
+  /// Angle horizontal (azimut) en degrés, 0-360
+  final double azimuth;
+
+  /// Angle vertical (élévation) en degrés, -90 à +90
+  final double elevation;
+
   final DateTime capturedAt;
-  final int index; // Index dans la séquence (0 à n-1)
+
+  /// Index de la rangée (0 = haut, 1 = milieu, 2 = bas)
+  final int rowIndex;
+
+  /// Index dans la rangée
+  final int indexInRow;
 
   const CapturedPhoto({
     required this.path,
-    required this.rotationAngle,
+    required this.azimuth,
+    required this.elevation,
     required this.capturedAt,
-    required this.index,
+    required this.rowIndex,
+    required this.indexInRow,
   });
 
   CapturedPhoto copyWith({
     String? path,
-    double? rotationAngle,
+    double? azimuth,
+    double? elevation,
     DateTime? capturedAt,
-    int? index,
+    int? rowIndex,
+    int? indexInRow,
   }) {
     return CapturedPhoto(
       path: path ?? this.path,
-      rotationAngle: rotationAngle ?? this.rotationAngle,
+      azimuth: azimuth ?? this.azimuth,
+      elevation: elevation ?? this.elevation,
       capturedAt: capturedAt ?? this.capturedAt,
-      index: index ?? this.index,
+      rowIndex: rowIndex ?? this.rowIndex,
+      indexInRow: indexInRow ?? this.indexInRow,
     );
   }
 }

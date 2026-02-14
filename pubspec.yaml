@@ -33,15 +33,12 @@ dependencies:
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
   
   # State management
   flutter_riverpod: ^2.6.1
   
   # Camera & sensors
   camera: ^0.10.6
-  camera_360: ^1.1.2
-  sensors_plus: ^6.0.1
   permission_handler: ^11.3.1
   
   # Image processing (offline stitching)
@@ -53,10 +50,9 @@ dependencies:
   # 360 viewer
   # 360 viewer (forked locally)
   flutter_cube: ^0.1.1
-  dchs_motion_sensors: ^2.0.1
+  sensors_plus: ^7.0.0
   
   # UI utilities
-  flutter_svg: ^2.0.10+1
 
 dev_dependencies:
   flutter_test:
