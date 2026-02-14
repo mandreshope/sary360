@@ -597,6 +597,9 @@ class CameraService {
           '${photoDir.path}/photo_r${target.rowIndex}_i${target.indexInRow}_$timestamp.jpg';
       await File(image.path).copy(newPath);
 
+      // ── Wide Angle Setup ──
+      final isWide = _useWideAngle;
+
       final photo = CapturedPhoto(
         path: newPath,
         azimuth: target.azimuth,
@@ -604,9 +607,10 @@ class CameraService {
         capturedAt: DateTime.now(),
         rowIndex: target.rowIndex,
         indexInRow: target.indexInRow,
-        // Si grand angle (zoom < 1.0), on utilise FOV ~100°, sinon null (défaut)
-        hFov: _useWideAngle ? 100.0 : null,
-        vFov: _useWideAngle ? 83.0 : null,
+        // FOV FORCE PORTRAIT ULTRA-WIDE
+        // Vertical = Grand côté (~100°), Horizontal = Petit côté (~83°)
+        hFov: isWide ? 83.0 : null,
+        vFov: isWide ? 100.0 : null,
       );
 
       // Marquer cette cible comme capturée

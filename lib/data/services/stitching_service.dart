@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
@@ -27,11 +26,15 @@ class PhotoData {
   final String path;
   final double azimuth;
   final double elevation;
+  final double? hFov;
+  final double? vFov;
 
   const PhotoData({
     required this.path,
     required this.azimuth,
     required this.elevation,
+    this.hFov,
+    this.vFov,
   });
 }
 
@@ -87,6 +90,8 @@ class StitchingService {
             path: p.path,
             azimuth: p.azimuth,
             elevation: p.elevation,
+            hFov: p.hFov,
+            vFov: p.vFov,
           ),
         )
         .toList();
@@ -159,13 +164,19 @@ class StitchingService {
         }
 
         // Résolution plus haute pour plus de détails
-        final resized = _resizeImage(decoded, 2048);
+        final resized = img.copyResize(
+          decoded,
+          width: 2048,
+          interpolation: img.Interpolation.linear,
+        );
 
         loadedPhotos.add(
           _LoadedPhoto(
             image: resized,
             azimuth: photos[i].azimuth,
             elevation: photos[i].elevation,
+            hFov: photos[i].hFov,
+            vFov: photos[i].vFov,
           ),
         );
       }
@@ -292,11 +303,18 @@ class StitchingService {
       final el = p.elevation * math.pi / 180;
 
       // Adaptation FOV Portrait vs Paysage
-      // Si l'image est plus haute que large (Portrait), on inverse les FOV
-      // hFov devient le petit angle (48°), vFov le grand (65°)
+      // Si l'image est plus haute que large (Portrait), on inverse les baseFOV (si on utilise les defauts)
       final bool isPortrait = p.image.height > p.image.width;
-      final double realHFov = isPortrait ? baseVFov : baseHFov;
-      final double realVFov = isPortrait ? baseHFov : baseVFov;
+
+      // Si le FOV est spécifié dans la photo (ex: Grand Angle), on l'utilise.
+      // Sinon on prend les défauts adaptés à l'orientation.
+      final double realHFov = p.hFov != null
+          ? (p.hFov! * math.pi / 180)
+          : (isPortrait ? baseVFov : baseHFov);
+
+      final double realVFov = p.vFov != null
+          ? (p.vFov! * math.pi / 180)
+          : (isPortrait ? baseHFov : baseVFov);
 
       return _PhotoProj(
         photo: p,
@@ -356,8 +374,10 @@ class StitchingService {
           final double rz0 = dx * proj.sinAz + dz * proj.cosAz;
 
           // 2) Inverse élévation R_x(-el) : tourne autour de X
-          final double ry = dy * proj.cosEl + rz0 * proj.sinEl;
-          final double rz = -dy * proj.sinEl + rz0 * proj.cosEl;
+          // CORRECTION : Inversion du signe de l'angle pour remettre Top en haut
+          // Avant c'était inversé. Maintenant on applique l'inverse de l'inverse ;)
+          final double ry = dy * proj.cosEl - rz0 * proj.sinEl;
+          final double rz = dy * proj.sinEl + rz0 * proj.cosEl;
 
           // Derrière la caméra → ignorer
           if (rz <= 0.01) continue;
@@ -562,19 +582,6 @@ class StitchingService {
   //  UTILITAIRES
   // ═══════════════════════════════════════════════════════════════════
 
-  static img.Image _resizeImage(img.Image image, int maxWidth) {
-    if (image.width > maxWidth) {
-      final ratio = image.height / image.width;
-      return img.copyResize(
-        image,
-        width: maxWidth,
-        height: (maxWidth * ratio).round(),
-        interpolation: img.Interpolation.linear,
-      );
-    }
-    return image;
-  }
-
   Future<void> cleanTempFiles() async {
     try {
       final tempDir = await getTemporaryDirectory();
@@ -665,11 +672,15 @@ class _LoadedPhoto {
   final img.Image image;
   final double azimuth;
   final double elevation;
+  final double? hFov;
+  final double? vFov;
 
   const _LoadedPhoto({
     required this.image,
     required this.azimuth,
     required this.elevation,
+    this.hFov,
+    this.vFov,
   });
 }
 
