@@ -287,50 +287,69 @@ class StitchingService {
     List<_LoadedPhoto> photos,
     SendPort sendPort,
   ) {
+    // ═══════════════════════════════════════════════════════════════════
+    //  PHASE 1 : OPTIMISATION D'ALIGNEMENT (Registration)
+    //  On utilise une petite résolution pour ajuster les positions
+    // ═══════════════════════════════════════════════════════════════════
+    sendPort.send(const StitchingResult(success: false, progress: 0.1));
+
+    final corrections = _optimizeAlignments(photos);
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  PHASE 2 : PROJECTION FINALE HAUTE RÉSOLUTION
+    // ═══════════════════════════════════════════════════════════════════
     final int outW = AppConstants.equirectWidth;
     final int outH = AppConstants.equirectHeight;
-    final equirect = img.Image(width: outW, height: outH);
 
     final double baseHFov = AppConstants.cameraHFov * math.pi / 180;
     final double baseVFov = AppConstants.cameraVFov * math.pi / 180;
 
-    // Coefficient de distorsion (désactivé temporairement pour debug)
     const double k1 = 0.0;
 
-    // Pré-calcul des matrices de rotation et FOV adaptés par photo
-    final List<_PhotoProj> projections = photos.map((p) {
-      final az = p.azimuth * math.pi / 180;
-      final el = p.elevation * math.pi / 180;
+    // Pré-calcul des matrices avec CORRECTIONS
+    final List<_PhotoProj> projections = [];
+    for (int i = 0; i < photos.length; i++) {
+      final p = photos[i];
+      final corr = corrections[i]; // Correction calculée
 
-      // Adaptation FOV Portrait vs Paysage
-      // Si l'image est plus haute que large (Portrait), on inverse les baseFOV (si on utilise les defauts)
+      // Appliquer la correction
+      final realAz = p.azimuth + corr.dAz;
+      final realEl = p.elevation + corr.dEl;
+
+      final az = realAz * math.pi / 180;
+      final el = realEl * math.pi / 180;
+
+      // Adaptation FOV (inchangé)
       final bool isPortrait = p.image.height > p.image.width;
-
-      // Si le FOV est spécifié dans la photo (ex: Grand Angle), on l'utilise.
-      // Sinon on prend les défauts adaptés à l'orientation.
       final double realHFov = p.hFov != null
           ? (p.hFov! * math.pi / 180)
           : (isPortrait ? baseVFov : baseHFov);
-
       final double realVFov = p.vFov != null
           ? (p.vFov! * math.pi / 180)
           : (isPortrait ? baseHFov : baseVFov);
 
-      return _PhotoProj(
-        photo: p,
-        cosAz: math.cos(az),
-        sinAz: math.sin(az),
-        cosEl: math.cos(el),
-        sinEl: math.sin(el),
-        hFov: realHFov,
-        vFov: realVFov,
+      projections.add(
+        _PhotoProj(
+          photo: p,
+          cosAz: math.cos(az),
+          sinAz: math.sin(az),
+          cosEl: math.cos(el),
+          sinEl: math.sin(el),
+          hFov: realHFov,
+          vFov: realVFov,
+        ),
       );
-    }).toList();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  PHASE 3 : RENDU FINAL
+    // ═══════════════════════════════════════════════════════════════════
+    final equirect = img.Image(width: outW, height: outH);
 
     for (int eqY = 0; eqY < outH; eqY++) {
       if (eqY % 80 == 0) {
         sendPort.send(
-          StitchingResult(success: false, progress: 0.35 + (eqY / outH) * 0.50),
+          StitchingResult(success: false, progress: 0.35 + (eqY / outH) * 0.60),
         );
       }
 
@@ -351,22 +370,6 @@ class StitchingService {
         for (final proj in projections) {
           // ═══════════════════════════════════════════════════════════
           // ROTATION INVERSE : world-space → camera-space
-          //
-          // Forward (camera to world) :
-          //   R = R_y(az) * R_x(el)
-          //   → d'abord tilt l'élévation, puis tourne l'azimut
-          //
-          // Inverse (world to camera) :
-          //   R⁻¹ = R_x(-el) * R_y(-az)
-          //   → d'abord annule l'azimut, puis annule l'élévation
-          //
-          // R_y(-az) :  [cos(az)  0  -sin(az)]   (rotation around Y)
-          //             [  0      1     0    ]
-          //             [sin(az)  0   cos(az)]
-          //
-          // R_x(-el) :  [1    0        0     ]   (rotation around X)
-          //             [0  cos(el)  sin(el) ]
-          //             [0 -sin(el)  cos(el) ]
           // ═══════════════════════════════════════════════════════════
 
           // 1) Inverse azimut R_y(-az) : tourne autour de Y
@@ -374,8 +377,7 @@ class StitchingService {
           final double rz0 = dx * proj.sinAz + dz * proj.cosAz;
 
           // 2) Inverse élévation R_x(-el) : tourne autour de X
-          // CORRECTION : Inversion du signe de l'angle pour remettre Top en haut
-          // Avant c'était inversé. Maintenant on applique l'inverse de l'inverse ;)
+          // Inversion signe sinEl pour top/bottom correct
           final double ry = dy * proj.cosEl - rz0 * proj.sinEl;
           final double rz = dy * proj.sinEl + rz0 * proj.cosEl;
 
@@ -390,42 +392,28 @@ class StitchingService {
           final double u0 = tanU / math.tan(proj.hFov / 2);
           final double v0 = tanV / math.tan(proj.vFov / 2);
 
-          // Hors du FOV ? (marge de 4% pour l'overlap)
           if (u0.abs() > 1.04 || v0.abs() > 1.04) continue;
 
-          // ── Correction distorsion lentille ──
           final double r2 = u0 * u0 + v0 * v0;
           final double distFactor = 1.0 + k1 * r2;
           final double u = u0 * distFactor;
           final double v = v0 * distFactor;
 
-          // Pixel continu dans l'image source (0..W, 0..H)
           final double srcX = (u * 0.5 + 0.5) * proj.photo.image.width;
           final double srcY = (0.5 - v * 0.5) * proj.photo.image.height;
 
-          final int imgW = proj.photo.image.width;
-          final int imgH = proj.photo.image.height;
-
-          if (srcX < 0 || srcX >= imgW - 1 || srcY < 0 || srcY >= imgH - 1) {
-            continue;
-          }
-
-          // ── Interpolation bilinéaire ──
+          // Interpolation bilinéaire
           final _RGBA color = _bilinearSample(proj.photo.image, srcX, srcY);
 
-          // ── Poids (feathering) ──
-          // Distance normalisée au centre [0..1]
-          final double distU = u0.abs(); // 0 = centre, 1 = bord
+          // Feathering
+          final double distU = u0.abs();
           final double distV = v0.abs();
           final double edgeDist = math.max(distU, distV);
-
-          // Falloff : cos^3 → transition progressive, pas trop brutal
-          // (cos^10 coupait trop net et créait des bandes)
           final double weight = edgeDist >= 1.0
               ? 0.0
               : math.pow(math.cos(edgeDist * math.pi / 2), 3.0).toDouble();
 
-          if (weight > 0.001) {
+          if (weight > 0) {
             totalR += color.r * weight;
             totalG += color.g * weight;
             totalB += color.b * weight;
@@ -444,13 +432,185 @@ class StitchingService {
               255,
             ),
           );
-        } else {
-          equirect.setPixel(eqX, eqY, img.ColorRgba8(0, 0, 0, 0));
         }
       }
     }
 
     return equirect;
+  }
+
+  // ── ALGORITHME D'ALIGNEMENT ──
+
+  static List<_Correction> _optimizeAlignments(List<_LoadedPhoto> photos) {
+    final corrections = List.generate(
+      photos.length,
+      (_) => const _Correction(0, 0),
+    );
+    if (photos.isEmpty) return corrections;
+
+    // Buffer basse rés (1 pixel = 1 degré)
+    final int w = 360;
+    final int h = 180;
+    final buffer = img.Image(width: w, height: h); // Transparent
+
+    // 1ere photo = ancrage
+    _compositeFast(buffer, photos[0], 0, 0);
+
+    for (int i = 1; i < photos.length; i++) {
+      double bestScore = double.infinity;
+      double bestDAz = 0;
+      double bestDEl = 0;
+
+      // Grid Search ±4° Az, ±3° El
+      for (double dAz = -4; dAz <= 4; dAz += 1.0) {
+        for (double dEl = -3; dEl <= 3; dEl += 1.0) {
+          final score = _computeDiffScore(buffer, photos[i], dAz, dEl);
+          if (score < bestScore) {
+            bestScore = score;
+            bestDAz = dAz;
+            bestDEl = dEl;
+          }
+        }
+      }
+      corrections[i] = _Correction(bestDAz, bestDEl);
+      _compositeFast(buffer, photos[i], bestDAz, bestDEl);
+    }
+    return corrections;
+  }
+
+  static double _computeDiffScore(
+    img.Image buffer,
+    _LoadedPhoto photo,
+    double dAz,
+    double dEl,
+  ) {
+    final azRad = (photo.azimuth + dAz) * math.pi / 180;
+    final elRad = (photo.elevation + dEl) * math.pi / 180;
+    final pW = photo.image.width;
+    final pH = photo.image.height;
+    final cosAz = math.cos(azRad);
+    final sinAz = math.sin(azRad);
+    final cosEl = math.cos(elRad);
+    final sinEl = math.sin(elRad);
+
+    final bool isPortrait = pH > pW;
+    final double hFov = photo.hFov != null
+        ? photo.hFov! * math.pi / 180
+        : (isPortrait ? 0.83 : 1.13);
+    final double vFov = photo.vFov != null
+        ? photo.vFov! * math.pi / 180
+        : (isPortrait ? 1.13 : 0.83);
+
+    int cx = ((photo.azimuth + dAz) / 360.0 * 360).round();
+    int cy = ((0.5 - (photo.elevation + dEl) / 180.0) * 180).round();
+    if (cx < 0) cx += 360;
+    int radX = (hFov * 180 / math.pi / 2).round() + 4;
+    int radY = (vFov * 180 / math.pi / 2).round() + 4;
+
+    double totalDiff = 0;
+    int count = 0;
+
+    for (int y = cy - radY; y <= cy + radY; y++) {
+      if (y < 0 || y >= 180) continue;
+      final lat = (0.5 - y / 180.0) * math.pi;
+      final cosLat = math.cos(lat);
+      final sinLat = math.sin(lat);
+
+      for (int x = cx - radX; x <= cx + radX; x++) {
+        final bx = x % 360;
+        final bp = buffer.getPixel(bx, y);
+        if (bp.a == 0) continue;
+
+        final lon = (bx / 360.0) * 2 * math.pi - math.pi;
+        final dx = cosLat * math.sin(lon);
+        final dy = sinLat;
+        final dz = cosLat * math.cos(lon);
+        final rx = dx * cosAz - dz * sinAz;
+        final rz0 = dx * sinAz + dz * cosAz;
+        final ry = dy * cosEl - rz0 * sinEl;
+        final rz = dy * sinEl + rz0 * cosEl;
+
+        if (rz <= 0.01) continue;
+        final tanU = rx / rz;
+        final tanV = ry / rz;
+        double u = tanU / math.tan(hFov / 2);
+        double v = tanV / math.tan(vFov / 2);
+        if (u.abs() > 1.0 || v.abs() > 1.0) continue;
+
+        final sx = (u * 0.5 + 0.5) * pW;
+        final sy = (0.5 - v * 0.5) * pH;
+        final pp = photo.image.getPixelSafe(sx.round(), sy.round());
+
+        totalDiff +=
+            (bp.r - pp.r).abs() + (bp.g - pp.g).abs() + (bp.b - pp.b).abs();
+        count++;
+      }
+    }
+    if (count < 20) return 999999999;
+    return totalDiff / count;
+  }
+
+  static void _compositeFast(
+    img.Image buffer,
+    _LoadedPhoto photo,
+    double dAz,
+    double dEl,
+  ) {
+    final azRad = (photo.azimuth + dAz) * math.pi / 180;
+    final elRad = (photo.elevation + dEl) * math.pi / 180;
+    final pW = photo.image.width;
+    final pH = photo.image.height;
+    final cosAz = math.cos(azRad);
+    final sinAz = math.sin(azRad);
+    final cosEl = math.cos(elRad);
+    final sinEl = math.sin(elRad);
+
+    final bool isPortrait = pH > pW;
+    final double hFov = photo.hFov != null
+        ? photo.hFov! * math.pi / 180
+        : (isPortrait ? 0.83 : 1.13);
+    final double vFov = photo.vFov != null
+        ? photo.vFov! * math.pi / 180
+        : (isPortrait ? 1.13 : 0.83);
+
+    int cx = ((photo.azimuth + dAz) / 360.0 * 360).round();
+    int cy = ((0.5 - (photo.elevation + dEl) / 180.0) * 180).round();
+    if (cx < 0) cx += 360;
+    int radX = (hFov * 180 / math.pi / 2).round() + 4;
+    int radY = (vFov * 180 / math.pi / 2).round() + 4;
+
+    for (int y = cy - radY; y <= cy + radY; y++) {
+      if (y < 0 || y >= 180) continue;
+      final lat = (0.5 - y / 180.0) * math.pi;
+      final cosLat = math.cos(lat);
+      final sinLat = math.sin(lat);
+      for (int x = cx - radX; x <= cx + radX; x++) {
+        final bx = x % 360;
+        final bp = buffer.getPixel(bx, y);
+        if (bp.a > 0) continue;
+
+        final lon = (bx / 360.0) * 2 * math.pi - math.pi;
+        final dx = cosLat * math.sin(lon);
+        final dy = sinLat;
+        final dz = cosLat * math.cos(lon);
+        final rx = dx * cosAz - dz * sinAz;
+        final rz0 = dx * sinAz + dz * cosAz;
+        final ry = dy * cosEl - rz0 * sinEl;
+        final rz = dy * sinEl + rz0 * cosEl;
+
+        if (rz <= 0.01) continue;
+        final tanU = rx / rz;
+        final tanV = ry / rz;
+        double u = tanU / math.tan(hFov / 2);
+        double v = tanV / math.tan(vFov / 2);
+        if (u.abs() > 1.0 || v.abs() > 1.0) continue;
+
+        final sx = (u * 0.5 + 0.5) * pW;
+        final sy = (0.5 - v * 0.5) * pH;
+        final pp = photo.image.getPixelSafe(sx.round(), sy.round());
+        buffer.setPixel(bx, y, pp);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -694,4 +854,11 @@ class _PendingPixel {
     required this.g,
     required this.b,
   });
+}
+
+/// Correction d'alignement (registration)
+class _Correction {
+  final double dAz;
+  final double dEl;
+  const _Correction(this.dAz, this.dEl);
 }
