@@ -53,11 +53,12 @@ class AppConstants {
 
   // ── Camera settings ──
   /// FOV horizontal estimé de la caméra (en degrés)
-  /// Valeur généreuse pour un bon recouvrement entre photos
-  static const double cameraHFov = 75.0;
+  /// Standard ~28mm eq (65°) pour éviter l'étirement
+  static const double cameraHFov = 65.0;
 
   /// FOV vertical estimé de la caméra (en degrés)
-  static const double cameraVFov = 60.0;
+  /// Standard 4:3 (48°)
+  static const double cameraVFov = 48.0;
 
   static const double defaultExposure = 0.0;
   static const double defaultZoom = 1.0;

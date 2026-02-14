@@ -183,9 +183,21 @@ class StitchingService {
 
       // Phase 5: Sauvegarder
       final outputFile = File(outputPath);
-      await outputFile.writeAsBytes(
-        img.encodeJpg(balanced, quality: AppConstants.jpegQuality),
+
+      // Encoder en JPEG
+      final jpegBytes = img.encodeJpg(
+        balanced,
+        quality: AppConstants.jpegQuality,
       );
+
+      // Injecter les métadonnées XMP pour Facebook/Google Photos
+      final jpegWithXmp = _injectXmpMetadata(
+        jpegBytes,
+        balanced.width,
+        balanced.height,
+      );
+
+      await outputFile.writeAsBytes(jpegWithXmp);
 
       sendPort.send(
         StitchingResult(success: true, panoramaPath: outputPath, progress: 1.0),
@@ -292,8 +304,11 @@ class StitchingService {
           // Falloff doux avec cos^2
           final double maxDist = 0.5;
           final double normDist = (distFromCenter / maxDist).clamp(0.0, 1.0);
+          // Blending plus "sharp" pour réduire les fantômes (saccades)
+          // On privilégie fortement le centre de l'image.
+          // Puissance 10 = Coupe nette, peu de mélange flou.
           final double weight = math
-              .pow(math.cos(normDist * math.pi / 2), 2)
+              .pow(math.cos(normDist * math.pi / 2), 10.0)
               .toDouble();
 
           if (weight > 0.001) {
@@ -438,7 +453,58 @@ class StitchingService {
       // Silently fail
     }
   }
-}
+
+  /// Injecte les métadonnées XMP (Google Photo Sphere) dans le JPEG
+  /// Permet à Facebook/Google Photos de reconnaître le 360°
+  static List<int> _injectXmpMetadata(List<int> jpeg, int width, int height) {
+    // Header standard pour XMP dans APP1
+    const String xmpHeader = 'http://ns.adobe.com/xap/1.0/\x00';
+
+    // Le XML XMP minimal pour Photo Sphere
+    final String xmpContent =
+        '''
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 5.1.0-jc003">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">
+      <GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>
+      <GPano:CaptureSoftware>Sary360</GPano:CaptureSoftware>
+      <GPano:ProjectionType>equirectangular</GPano:ProjectionType>
+      <GPano:PoseHeadingDegrees>0.0</GPano:PoseHeadingDegrees>
+      <GPano:CroppedAreaLeftPixels>0</GPano:CroppedAreaLeftPixels>
+      <GPano:CroppedAreaTopPixels>0</GPano:CroppedAreaTopPixels>
+      <GPano:FullPanoWidthPixels>$width</GPano:FullPanoWidthPixels>
+      <GPano:FullPanoHeightPixels>$height</GPano:FullPanoHeightPixels>
+      <GPano:CroppedAreaImageWidthPixels>$width</GPano:CroppedAreaImageWidthPixels>
+      <GPano:CroppedAreaImageHeightPixels>$height</GPano:CroppedAreaImageHeightPixels>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>''';
+
+    // Construire le segment APP1
+    // Marker (FF E1) + Length (2 bytes) + Header + Content
+    final List<int> headerBytes = xmpHeader.codeUnits;
+    final List<int> contentBytes = xmpContent.codeUnits;
+    final int length = 2 + headerBytes.length + contentBytes.length;
+
+    final List<int> app1Segment = [
+      0xFF,
+      0xE1,
+      (length >> 8) & 0xFF,
+      length & 0xFF,
+      ...headerBytes,
+      ...contentBytes,
+    ];
+
+    // Insérer après le SOI (FF D8)
+    // JPEG commence par FF D8
+    if (jpeg.length >= 2 && jpeg[0] == 0xFF && jpeg[1] == 0xD8) {
+      return [0xFF, 0xD8, ...app1Segment, ...jpeg.sublist(2)];
+    }
+
+    // Fallback si pas un JPEG valide (ne devrait pas arriver)
+    return jpeg;
+  }
+} // Fin de la classe StitchingService
 
 /// Données de projection pré-calculées pour une photo
 class _PhotoProjection {
