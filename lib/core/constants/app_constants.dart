@@ -33,11 +33,11 @@ class AppConstants {
       photosPerRow.fold(0, (sum, count) => sum + count);
 
   /// Tolérance angulaire pour valider la position (en degrés)
-  /// Large pour une expérience fluide — le chevauchement des photos compense
-  static const double angleTolerance = 25.0;
+  /// Réduction (18°) pour éviter le décalage perçu et garantir la précision
+  static const double angleTolerance = 18.0;
 
   /// Tolérance d'élévation pour valider la rangée (en degrés)
-  static const double elevationTolerance = 22.0;
+  static const double elevationTolerance = 18.0;
 
   // ── Image processing ──
   static const int maxImageWidth = 1920;

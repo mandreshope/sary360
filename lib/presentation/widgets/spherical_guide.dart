@@ -104,7 +104,8 @@ class _Sphere3DPainter extends CustomPainter {
     final radius = size.width / 2 - 4;
 
     // Rotation de la sphère pour que la direction actuelle soit au centre
-    final rotAz = -currentAzimuth * math.pi / 180;
+    // Correction : sens positif pour l'azimut (le monde tourne à l'envers de la tête)
+    final rotAz = currentAzimuth * math.pi / 180;
     final rotEl = currentElevation * math.pi / 180;
 
     // Dessiner le fond de la sphère

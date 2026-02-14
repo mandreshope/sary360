@@ -221,35 +221,58 @@ class CameraService {
   //  CAPTEURS & ORIENTATION
   // ═══════════════════════════════════════════════════════════════════════
 
-  /// Démarre l'écoute des capteurs
-  /// Fréquence standard (33Hz) + filtre modéré pour une bonne réactivité
-  void _startSensors() {
-    // Accéléromètre pour gravity — 30ms = ~33Hz
-    _accelSub =
-        accelerometerEventStream(
-          samplingPeriod: const Duration(milliseconds: 30),
-        ).listen((event) {
-          // Alpha 0.15 = bon compromis réactivité/stabilité
-          const alpha = 0.15;
-          _gravity[0] = alpha * event.x + (1 - alpha) * _gravity[0];
-          _gravity[1] = alpha * event.y + (1 - alpha) * _gravity[1];
-          _gravity[2] = alpha * event.z + (1 - alpha) * _gravity[2];
-          _hasGravityData = true;
-          _updateOrientation();
-        });
+  // Buffers pour moyenne glissante (lissage du bruit)
+  final List<List<double>> _gravBuffer = [];
+  final List<List<double>> _magBuffer = [];
+  static const int _bufferSize = 5; // Moyenne sur 5 échantillons
 
-    // Magnétomètre pour la direction — 30ms = ~33Hz
-    _magnetSub =
-        magnetometerEventStream(
-          samplingPeriod: const Duration(milliseconds: 30),
-        ).listen((event) {
-          const alpha = 0.15;
-          _magnetic[0] = alpha * event.x + (1 - alpha) * _magnetic[0];
-          _magnetic[1] = alpha * event.y + (1 - alpha) * _magnetic[1];
-          _magnetic[2] = alpha * event.z + (1 - alpha) * _magnetic[2];
-          _hasMagnetData = true;
-          _updateOrientation();
-        });
+  /// Calcule la moyenne d'un buffer de vecteurs
+  List<double> _average(List<List<double>> buffer) {
+    double x = 0, y = 0, z = 0;
+    for (var v in buffer) {
+      x += v[0];
+      y += v[1];
+      z += v[2];
+    }
+    final count = buffer.length;
+    return [x / count, y / count, z / count];
+  }
+
+  /// Démarre l'écoute des capteurs
+  /// Utilise une moyenne glissante pour stabiliser les valeurs brutes
+  void _startSensors() {
+    // Fréquence ~33Hz (30ms)
+    const sampling = Duration(milliseconds: 30);
+
+    _accelSub = accelerometerEventStream(samplingPeriod: sampling).listen((
+      event,
+    ) {
+      // Ajouter au buffer
+      _gravBuffer.add([event.x, event.y, event.z]);
+      if (_gravBuffer.length > _bufferSize) _gravBuffer.removeAt(0);
+
+      // Calculer la moyenne
+      final avg = _average(_gravBuffer);
+      _gravity[0] = avg[0];
+      _gravity[1] = avg[1];
+      _gravity[2] = avg[2];
+      _hasGravityData = true;
+      _updateOrientation();
+    });
+
+    _magnetSub = magnetometerEventStream(samplingPeriod: sampling).listen((
+      event,
+    ) {
+      _magBuffer.add([event.x, event.y, event.z]);
+      if (_magBuffer.length > _bufferSize) _magBuffer.removeAt(0);
+
+      final avg = _average(_magBuffer);
+      _magnetic[0] = avg[0];
+      _magnetic[1] = avg[1];
+      _magnetic[2] = avg[2];
+      _hasMagnetData = true;
+      _updateOrientation();
+    });
   }
 
   /// Calcule l'orientation à partir des données capteurs
@@ -261,23 +284,129 @@ class CameraService {
     final gx = _gravity[0];
     final gy = _gravity[1];
     final gz = _gravity[2];
-    final gNorm = math.sqrt(gx * gx + gy * gy + gz * gz);
 
-    if (gNorm < 0.1) return;
+    // ── Calcul vectoriel robuste (sans Gimbal Lock) ──
+    // On construit un repère orthonormé (North, East, Down)
+    // basé sur la gravité et le champ magnétique.
 
-    // Pitch: angle entre l'axe Y du téléphone et l'horizontale
-    // En portrait, gy pointe vers le haut, gz vers l'utilisateur
-    double pitch = math.atan2(-gy, gz) * 180 / math.pi;
-    // Ajuster: téléphone vertical (portrait) = 0° d'élévation horizontale
-    pitch = pitch - 90;
-    if (pitch < -90) pitch += 360;
-    if (pitch > 90) pitch = 180 - pitch;
+    // 1. Vecteur Gravité (Down) normalisé
+    // Note: Sensors_plus l'axe Z est positif sortant de l'écran.
+    // Sur table: Z = +9.8. Debout: Y = +9.8.
+    // Donc le vecteur gravité capteur pointe vers le HAUT (réaction sol).
+    // On veut le vecteur Down (vers le centre de la terre).
+    // Donc Down = -Gravity.
+    // Mais simplifions: on travaille avec le vecteur "Up" (zénith local) = Gravity normalisé.
+    final double gNorm = math.sqrt(gx * gx + gy * gy + gz * gz);
+    if (gNorm < 0.1) return; // Erreur capteur
+    final double ux = gx / gNorm;
+    final double uy = gy / gNorm;
+    final double uz = gz / gNorm; // Vecteur Up local (dans le repère device)
 
-    // Calculer l'azimut brut à partir du magnétomètre et de la gravité
-    final hx = _magnetic[1] * gz - _magnetic[2] * gy;
-    final hy = _magnetic[2] * gx - _magnetic[0] * gz;
-    double rawAzimuth = math.atan2(hy, hx) * 180 / math.pi;
+    // 2. Vecteur Magnétique (North-ish) normalisé
+    final double mNorm = math.sqrt(
+      _magnetic[0] * _magnetic[0] +
+          _magnetic[1] * _magnetic[1] +
+          _magnetic[2] * _magnetic[2],
+    );
+    if (mNorm < 0.1) return;
+    final double mx = _magnetic[0] / mNorm;
+    final double my = _magnetic[1] / mNorm;
+    final double mz = _magnetic[2] / mNorm;
+
+    // 3. Calcul du vecteur West = Cross(Up, Mag)
+    // (Up x North = West car on est en repère direct main droite)
+    double wx = uy * mz - uz * my;
+    double wy = uz * mx - ux * mz;
+    double wz = ux * my - uy * mx;
+    final double wNorm = math.sqrt(wx * wx + wy * wy + wz * wz);
+
+    if (wNorm < 0.1) {
+      // Cas rare : magnétique vertical (au pôle nord magnétique)
+      // On garde l'ancienne orientation ou on ignore
+      return;
+    }
+    wx /= wNorm;
+    wy /= wNorm;
+    wz /= wNorm;
+
+    // 4. Calcul du vecteur North réel (projeté sur horizon)
+    // North = Cross(West, Up)
+    final double nx = wy * uz - wz * uy;
+    final double ny = wz * ux - wx * uz;
+    final double nz = wx * uy - wy * ux;
+
+    // 5. Vecteur de visée Caméra (View)
+    // Caméra arrière regarde vers -Z (standard Android/iOS)
+    // C = (0, 0, -1)
+    const double cx = 0;
+    const double cy = 0;
+    const double cz = -1;
+
+    // ── CALCULE DE L'ELEVATION ──
+    // Élévation = angle entre View et plan horizontal
+    // = 90 - angle(View, Up)
+    // Dot(View, Up) = |View|*|Up|*cos(angle)
+    // Ici View et Up sont unitaires.
+    // Dot = cx*ux + cy*uy + cz*uz = -uz
+    // cos(angle_zenith) = -uz
+    // angle_zenith = acos(-uz)
+    // Elevation = 90 - acos(-uz) * 180 / pi
+    // Ou directement: Elevation = asin(-uz) * 180 / pi
+    // asin(x) est défini sur [-1, 1], uz est entre [-1, 1].
+    // Si uz = 1 (table), elev = asin(-1) = -90 (Nadir).
+    // Si uz = 0 (debout), elev = asin(0) = 0 (Horizon).
+    // Si uz = -1 (face bas), elev = asin(1) = 90 (Zénith).
+    // CORRECT !
+    double rawElevation = math.asin(-uz.clamp(-1.0, 1.0)) * 180 / math.pi;
+
+    // ── CALCULE DE L'AZIMUT ──
+    // On projette le vecteur View sur le plan horizontal
+    // V_horiz = View - Dot(View, Up) * Up
+    final double dotVU = -uz;
+    double vhx = cx - dotVU * ux;
+    double vhy = cy - dotVU * uy;
+    double vhz = cz - dotVU * uz;
+
+    // Normaliser la projection (sauf si proche du zénith/nadir)
+    final double vhNorm = math.sqrt(vhx * vhx + vhy * vhy + vhz * vhz);
+
+    double rawAzimuth;
+    if (vhNorm < 0.1) {
+      // Proche du zénith/nadir ("Gimbal Lock" partiel)
+      // L'azimut de la VUE n'a plus de sens.
+      // On utilise l'azimut du HAUT du téléphone (Y axis) pour stabiliser
+      // Top = (0, 1, 0)
+      const double tx = 0;
+      const double ty = 1;
+      const double tz = 0;
+      final double dotTU = uy; // Dot(Top, Up)
+      double thx = tx - dotTU * ux;
+      double thy = ty - dotTU * uy;
+      double thz = tz - dotTU * uz;
+      // Normalisation implicite dans atan2
+      // Projection sur (North, East)
+      // East = -West
+      final double eastComp = thx * -wx + thy * -wy + thz * -wz;
+      final double northComp = thx * nx + thy * ny + thz * nz;
+      rawAzimuth = math.atan2(eastComp, northComp) * 180 / math.pi;
+    } else {
+      // Cas normal
+      // Projection sur la base (North, East)
+      // East = -West (car West = Up x North => North x Up = -West? Non)
+      // West = Up x North. North = West x Up.
+      // E = N x U? No base is (N, E, D)? No base is (N, -W, U)?
+      // West vector points West. East vector = -West.
+
+      final double eastComp = vhx * -wx + vhy * -wy + vhz * -wz;
+      final double northComp = vhx * nx + vhy * ny + vhz * nz;
+
+      rawAzimuth = math.atan2(eastComp, northComp) * 180 / math.pi;
+    }
+
     if (rawAzimuth < 0) rawAzimuth += 360;
+
+    // Pitch dans le code existant = Elevation
+    double pitch = rawElevation;
 
     // ── Low-pass filter sur l'azimut avec gestion du wrap-around ──
     // Alpha 0.15 = plus réactif pour suivre la main de l'utilisateur
@@ -364,11 +493,18 @@ class CameraService {
 
     // Tolérance plus large pour les rangées près des pôles
     // (car les points sont plus proches en longitude)
+    // Tolérance adaptative selon l'élévation
+    // Plus on est proche des pôles, plus les méridiens convergent
     double azTolerance = AppConstants.angleTolerance;
-    if (target.elevation.abs() > 60) {
-      azTolerance *= 2.0; // Double tolérance pour zénith/nadir (très facile)
-    } else if (target.elevation.abs() > 30) {
-      azTolerance *= 1.25; // +25% pour les rangées intermédiaires
+
+    if (target.elevation.abs() > 80) {
+      // Aux pôles (Zénith/Nadir), l'azimut importe peu ou pas du tout
+      azTolerance = 180.0;
+    } else if (target.elevation.abs() > 40) {
+      // Pour les rangées intermédiaires (±45°), les cibles sont espacées de 60°
+      // Base 18° * 1.5 = 27°. Fenêtre de capture = 54°.
+      // Marge de sécurité = 6° avant chevauchement. OK.
+      azTolerance *= 1.5;
     }
 
     return azimuthDiff.abs() < azTolerance &&
