@@ -280,25 +280,32 @@ class StitchingService {
     final int outH = AppConstants.equirectHeight;
     final equirect = img.Image(width: outW, height: outH);
 
-    final double hFov = AppConstants.cameraHFov * math.pi / 180;
-    final double vFov = AppConstants.cameraVFov * math.pi / 180;
+    final double baseHFov = AppConstants.cameraHFov * math.pi / 180;
+    final double baseVFov = AppConstants.cameraVFov * math.pi / 180;
 
-    // Coefficient de distorsion lentille (barillet → compenser)
-    // Valeur empirique pour grand angle mobile (~28mm eq)
-    const double k1 = -0.12;
+    // Coefficient de distorsion (désactivé temporairement pour debug)
+    const double k1 = 0.0;
 
-    // Pré-calcul des matrices de rotation pour chaque photo
+    // Pré-calcul des matrices de rotation et FOV adaptés par photo
     final List<_PhotoProj> projections = photos.map((p) {
       final az = p.azimuth * math.pi / 180;
       final el = p.elevation * math.pi / 180;
+
+      // Adaptation FOV Portrait vs Paysage
+      // Si l'image est plus haute que large (Portrait), on inverse les FOV
+      // hFov devient le petit angle (48°), vFov le grand (65°)
+      final bool isPortrait = p.image.height > p.image.width;
+      final double realHFov = isPortrait ? baseVFov : baseHFov;
+      final double realVFov = isPortrait ? baseHFov : baseVFov;
+
       return _PhotoProj(
         photo: p,
-        // Matrice de rotation inverse : R_el^T * R_az^T
-        // On stocke les 9 éléments pour éviter de recalculer
         cosAz: math.cos(az),
         sinAz: math.sin(az),
         cosEl: math.cos(el),
         sinEl: math.sin(el),
+        hFov: realHFov,
+        vFov: realVFov,
       );
     }).toList();
 
@@ -324,14 +331,33 @@ class StitchingService {
         double totalR = 0, totalG = 0, totalB = 0, totalW = 0;
 
         for (final proj in projections) {
-          // ── Rotation inverse ──
-          // 1) Inverse azimut (autour de Y)
-          final double rx = dx * proj.cosAz + dz * proj.sinAz;
-          final double rz0 = -dx * proj.sinAz + dz * proj.cosAz;
+          // ═══════════════════════════════════════════════════════════
+          // ROTATION INVERSE : world-space → camera-space
+          //
+          // Forward (camera to world) :
+          //   R = R_y(az) * R_x(el)
+          //   → d'abord tilt l'élévation, puis tourne l'azimut
+          //
+          // Inverse (world to camera) :
+          //   R⁻¹ = R_x(-el) * R_y(-az)
+          //   → d'abord annule l'azimut, puis annule l'élévation
+          //
+          // R_y(-az) :  [cos(az)  0  -sin(az)]   (rotation around Y)
+          //             [  0      1     0    ]
+          //             [sin(az)  0   cos(az)]
+          //
+          // R_x(-el) :  [1    0        0     ]   (rotation around X)
+          //             [0  cos(el)  sin(el) ]
+          //             [0 -sin(el)  cos(el) ]
+          // ═══════════════════════════════════════════════════════════
 
-          // 2) Inverse élévation (autour de X)
-          final double ry = dy * proj.cosEl - rz0 * proj.sinEl;
-          final double rz = dy * proj.sinEl + rz0 * proj.cosEl;
+          // 1) Inverse azimut R_y(-az) : tourne autour de Y
+          final double rx = dx * proj.cosAz - dz * proj.sinAz;
+          final double rz0 = dx * proj.sinAz + dz * proj.cosAz;
+
+          // 2) Inverse élévation R_x(-el) : tourne autour de X
+          final double ry = dy * proj.cosEl + rz0 * proj.sinEl;
+          final double rz = -dy * proj.sinEl + rz0 * proj.cosEl;
 
           // Derrière la caméra → ignorer
           if (rz <= 0.01) continue;
