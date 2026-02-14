@@ -55,6 +55,7 @@ class CameraService {
   // ── État interne ──
   bool _isTakingPicture = false;
   bool _isReady = false;
+  bool _useWideAngle = false; // Drapeau pour savoir si on est en grand angle
 
   /// Cooldown après chaque capture pour éviter les doubles captures
   DateTime _lastCaptureTime = DateTime(2000);
@@ -209,6 +210,17 @@ class CameraService {
 
       // Attendre que le pipeline natif Android soit complètement prêt
       await Future.delayed(const Duration(milliseconds: 800));
+
+      // Essayer d'activer l'ultra grand angle (zoom min < 1.0)
+      try {
+        final minZoom = await _controller!.getMinZoomLevel();
+        if (minZoom < 1.0) {
+          await _controller!.setZoomLevel(minZoom);
+          _useWideAngle = true;
+        }
+      } catch (_) {
+        // Ignorer si échec (reste en normal)
+      }
 
       await _lockExposureAndFocus();
       _isReady = true;
@@ -592,6 +604,9 @@ class CameraService {
         capturedAt: DateTime.now(),
         rowIndex: target.rowIndex,
         indexInRow: target.indexInRow,
+        // Si grand angle (zoom < 1.0), on utilise FOV ~100°, sinon null (défaut)
+        hFov: _useWideAngle ? 100.0 : null,
+        vFov: _useWideAngle ? 83.0 : null,
       );
 
       // Marquer cette cible comme capturée

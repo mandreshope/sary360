@@ -367,8 +367,8 @@ class StitchingService {
           final double tanV = ry / rz;
 
           // Coordonnées normalisées sur le plan image
-          final double u0 = tanU / math.tan(hFov / 2);
-          final double v0 = tanV / math.tan(vFov / 2);
+          final double u0 = tanU / math.tan(proj.hFov / 2);
+          final double v0 = tanV / math.tan(proj.vFov / 2);
 
           // Hors du FOV ? (marge de 4% pour l'overlap)
           if (u0.abs() > 1.04 || v0.abs() > 1.04) continue;
@@ -647,6 +647,7 @@ class _RGBA {
 class _PhotoProj {
   final _LoadedPhoto photo;
   final double cosAz, sinAz, cosEl, sinEl;
+  final double hFov, vFov;
 
   const _PhotoProj({
     required this.photo,
@@ -654,6 +655,8 @@ class _PhotoProj {
     required this.sinAz,
     required this.cosEl,
     required this.sinEl,
+    required this.hFov,
+    required this.vFov,
   });
 }
 

@@ -16,6 +16,12 @@ class CapturedPhoto {
   /// Index dans la rangée
   final int indexInRow;
 
+  /// Champ de vision horizontal utilisé (null = défaut)
+  final double? hFov;
+
+  /// Champ de vision vertical utilisé (null = défaut)
+  final double? vFov;
+
   const CapturedPhoto({
     required this.path,
     required this.azimuth,
@@ -23,6 +29,8 @@ class CapturedPhoto {
     required this.capturedAt,
     required this.rowIndex,
     required this.indexInRow,
+    this.hFov,
+    this.vFov,
   });
 
   CapturedPhoto copyWith({
@@ -32,6 +40,8 @@ class CapturedPhoto {
     DateTime? capturedAt,
     int? rowIndex,
     int? indexInRow,
+    double? hFov,
+    double? vFov,
   }) {
     return CapturedPhoto(
       path: path ?? this.path,
@@ -40,6 +50,8 @@ class CapturedPhoto {
       capturedAt: capturedAt ?? this.capturedAt,
       rowIndex: rowIndex ?? this.rowIndex,
       indexInRow: indexInRow ?? this.indexInRow,
+      hFov: hFov ?? this.hFov,
+      vFov: vFov ?? this.vFov,
     );
   }
 }
