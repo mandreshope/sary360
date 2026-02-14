@@ -47,13 +47,20 @@ class CaptureViewState {
     this.currentRow = 0,
   });
 
-  double get progress =>
-      totalTargets > 0 ? capturedPhotos.length / totalTargets : 0.0;
+  /// Progression = photos capturées / total cibles (clampé entre 0 et 1)
+  double get progress => totalTargets > 0
+      ? (capturedPhotos.length / totalTargets).clamp(0.0, 1.0)
+      : 0.0;
 
   bool get isCapturing =>
       state == CaptureState.capturing || state == CaptureState.ready;
 
-  bool get canCapture => state == CaptureState.ready && isNearTarget;
+  /// On peut capturer seulement si: état ready, proche de la cible,
+  /// et le nombre de photos n'a pas encore atteint le total
+  bool get canCapture =>
+      state == CaptureState.ready &&
+      isNearTarget &&
+      capturedPhotos.length < totalTargets;
 
   String get currentRowLabel {
     switch (currentRow) {
@@ -125,6 +132,12 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
       // Écouter les changements d'orientation
       _cameraService.onOrientationChanged = (orientation) {
         if (!mounted) return;
+        // Ne pas mettre à jour si on est en train de capturer ou si c'est fini
+        if (state.state == CaptureState.capturing ||
+            state.state == CaptureState.stitching ||
+            state.state == CaptureState.completed) {
+          return;
+        }
         state = state.copyWith(
           currentAzimuth: orientation.azimuth,
           currentElevation: orientation.pitch,
@@ -133,6 +146,17 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
 
       _cameraService.onTargetProximityChanged = (target, isNear) {
         if (!mounted) return;
+        // Ne pas mettre à jour si on est en train de capturer ou si c'est fini
+        if (state.state == CaptureState.capturing ||
+            state.state == CaptureState.stitching ||
+            state.state == CaptureState.completed) {
+          return;
+        }
+        // Ne jamais dépasser le total
+        if (state.capturedPhotos.length >= state.totalTargets &&
+            state.totalTargets > 0) {
+          return;
+        }
         state = state.copyWith(
           isNearTarget: isNear,
           targetAzimuth: target.azimuth,
@@ -141,9 +165,11 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
         );
       };
 
+      final totalTargets = _cameraService.targets.length;
+
       state = state.copyWith(
         state: CaptureState.ready,
-        totalTargets: _cameraService.targets.length,
+        totalTargets: totalTargets,
         currentTargetIndex: 0,
       );
 
@@ -166,20 +192,29 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
 
   /// Capture une photo au point courant
   Future<void> captureCurrentTarget() async {
+    // Double-vérification: état + compteur
     if (!state.canCapture) return;
+    if (_cameraService.isComplete) return;
 
-    state = state.copyWith(state: CaptureState.capturing);
+    state = state.copyWith(
+      state: CaptureState.capturing,
+      isNearTarget: false, // Désactiver immédiatement
+    );
 
     try {
       final photo = await _cameraService.capturePhoto();
       final updatedPhotos = [...state.capturedPhotos, photo];
 
-      if (_cameraService.isComplete) {
+      // Vérifier si on a fini (clamper le count)
+      final capturedCount = updatedPhotos.length.clamp(0, state.totalTargets);
+
+      if (_cameraService.isComplete || capturedCount >= state.totalTargets) {
         // Toutes les photos ont été prises → stitching
         state = state.copyWith(
           state: CaptureState.stitching,
           capturedPhotos: updatedPhotos,
-          currentTargetIndex: _cameraService.currentTargetIndex,
+          currentTargetIndex: state.totalTargets,
+          isNearTarget: false,
         );
 
         await _performStitching(updatedPhotos);
@@ -190,17 +225,25 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
           state: CaptureState.ready,
           capturedPhotos: updatedPhotos,
           currentTargetIndex: _cameraService.currentTargetIndex,
-          isNearTarget: false,
+          isNearTarget: false, // Forcer à false, sera mis à jour par le sensor
           targetAzimuth: nextTarget?.azimuth ?? 0,
           targetElevation: nextTarget?.elevation ?? 0,
           currentRow: nextTarget?.rowIndex ?? 0,
         );
       }
     } catch (e) {
-      state = state.copyWith(
-        state: CaptureState.error,
-        errorMessage: 'Erreur de capture: $e',
-      );
+      // Si l'erreur est juste un cooldown, revenir en ready sans afficher d'erreur
+      final errorMsg = e.toString();
+      if (errorMsg.contains('cooldown') ||
+          errorMsg.contains('attendre') ||
+          errorMsg.contains('déjà en cours')) {
+        state = state.copyWith(state: CaptureState.ready, isNearTarget: false);
+      } else {
+        state = state.copyWith(
+          state: CaptureState.error,
+          errorMessage: 'Erreur de capture: $e',
+        );
+      }
     }
   }
 

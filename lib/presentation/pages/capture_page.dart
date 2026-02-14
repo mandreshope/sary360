@@ -182,20 +182,43 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           ),
         ),
 
-        // Bouton de capture
+        // Bouton de capture (ou indicateur pendant la capture)
         Positioned(
           bottom: 30,
           left: 0,
           right: 0,
           child: Center(
-            child: CaptureButton(
-              enabled: viewModel.canCapture,
-              onPressed: () {
-                ref
-                    .read(captureViewModelProvider.notifier)
-                    .captureCurrentTarget();
-              },
-            ),
+            child: viewModel.state == CaptureState.capturing
+                ? Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black.withValues(alpha: 0.5),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        width: 3,
+                      ),
+                    ),
+                    child: const Center(
+                      child: SizedBox(
+                        width: 30,
+                        height: 30,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: Colors.cyanAccent,
+                        ),
+                      ),
+                    ),
+                  )
+                : CaptureButton(
+                    enabled: viewModel.canCapture,
+                    onPressed: () {
+                      ref
+                          .read(captureViewModelProvider.notifier)
+                          .captureCurrentTarget();
+                    },
+                  ),
           ),
         ),
       ],

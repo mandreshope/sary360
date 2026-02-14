@@ -17,7 +17,8 @@ class PanoramaProgressIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final progress = total > 0 ? current / total : 0.0;
+    final clampedCurrent = current.clamp(0, total);
+    final progress = total > 0 ? (clampedCurrent / total).clamp(0.0, 1.0) : 0.0;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
@@ -47,7 +48,7 @@ class PanoramaProgressIndicator extends StatelessWidget {
           ],
           // Compteur
           Text(
-            'Photo $current / $total',
+            'Photo $clampedCurrent / $total',
             style: const TextStyle(
               color: Colors.white,
               fontSize: 18,
