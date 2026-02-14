@@ -1,8 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/constants/app_constants.dart';
 import '../../data/services/camera_service.dart';
 import '../../data/services/stitching_service.dart';
 import '../../domain/models/captured_photo.dart';
 import '../../domain/models/panorama.dart';
+import '../../presentation/widgets/spherical_guide.dart';
 
 /// État de la capture
 enum CaptureState {
@@ -30,6 +32,7 @@ class CaptureViewState {
   final Panorama? completedPanorama;
   final String? errorMessage;
   final int currentRow;
+  final List<TargetPoint> allTargetPoints;
 
   const CaptureViewState({
     this.state = CaptureState.idle,
@@ -45,6 +48,7 @@ class CaptureViewState {
     this.completedPanorama,
     this.errorMessage,
     this.currentRow = 0,
+    this.allTargetPoints = const [],
   });
 
   /// Progression = photos capturées / total cibles (clampé entre 0 et 1)
@@ -63,16 +67,10 @@ class CaptureViewState {
       capturedPhotos.length < totalTargets;
 
   String get currentRowLabel {
-    switch (currentRow) {
-      case 0:
-        return 'Rangée haute';
-      case 1:
-        return 'Rangée horizontale';
-      case 2:
-        return 'Rangée basse';
-      default:
-        return 'Rangée $currentRow';
+    if (currentRow >= 0 && currentRow < AppConstants.rowNames.length) {
+      return AppConstants.rowNames[currentRow];
     }
+    return 'Rangée $currentRow';
   }
 
   CaptureViewState copyWith({
@@ -89,6 +87,7 @@ class CaptureViewState {
     Panorama? completedPanorama,
     String? errorMessage,
     int? currentRow,
+    List<TargetPoint>? allTargetPoints,
   }) {
     return CaptureViewState(
       state: state ?? this.state,
@@ -104,6 +103,7 @@ class CaptureViewState {
       completedPanorama: completedPanorama ?? this.completedPanorama,
       errorMessage: errorMessage ?? this.errorMessage,
       currentRow: currentRow ?? this.currentRow,
+      allTargetPoints: allTargetPoints ?? this.allTargetPoints,
     );
   }
 }
@@ -121,6 +121,20 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
        super(const CaptureViewState());
 
   CameraService get cameraService => _cameraService;
+
+  /// Construit la liste de TargetPoint pour le guide sphérique
+  List<TargetPoint> _buildTargetPoints() {
+    final targets = _cameraService.targets;
+    final capturedIndices = _cameraService.capturedTargetIndices;
+
+    return List.generate(targets.length, (i) {
+      return TargetPoint(
+        azimuth: targets[i].azimuth,
+        elevation: targets[i].elevation,
+        isCaptured: capturedIndices.contains(i),
+      );
+    });
+  }
 
   /// Initialise la capture sphérique
   Future<void> initializeCapture() async {
@@ -165,12 +179,22 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
         );
       };
 
+      // ★ Capture automatique quand le hold-steady est confirmé
+      _cameraService.onAutoCapture = () {
+        if (!mounted) return;
+        if (state.state != CaptureState.ready) return;
+        if (state.capturedPhotos.length >= state.totalTargets) return;
+        captureCurrentTarget();
+      };
+
       final totalTargets = _cameraService.targets.length;
+      final targetPoints = _buildTargetPoints();
 
       state = state.copyWith(
         state: CaptureState.ready,
         totalTargets: totalTargets,
         currentTargetIndex: 0,
+        allTargetPoints: targetPoints,
       );
 
       // Mettre à jour la cible initiale
@@ -204,6 +228,7 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
     try {
       final photo = await _cameraService.capturePhoto();
       final updatedPhotos = [...state.capturedPhotos, photo];
+      final targetPoints = _buildTargetPoints();
 
       // Vérifier si on a fini (clamper le count)
       final capturedCount = updatedPhotos.length.clamp(0, state.totalTargets);
@@ -215,6 +240,7 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
           capturedPhotos: updatedPhotos,
           currentTargetIndex: state.totalTargets,
           isNearTarget: false,
+          allTargetPoints: targetPoints,
         );
 
         await _performStitching(updatedPhotos);
@@ -229,6 +255,7 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
           targetAzimuth: nextTarget?.azimuth ?? 0,
           targetElevation: nextTarget?.elevation ?? 0,
           currentRow: nextTarget?.rowIndex ?? 0,
+          allTargetPoints: targetPoints,
         );
       }
     } catch (e) {
@@ -275,9 +302,11 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
   /// Réinitialise la capture
   void reset() {
     _cameraService.reset();
+    final targetPoints = _buildTargetPoints();
     state = CaptureViewState(
       state: CaptureState.ready,
       totalTargets: _cameraService.targets.length,
+      allTargetPoints: targetPoints,
     );
 
     if (_cameraService.currentTarget != null) {

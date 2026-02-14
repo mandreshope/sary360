@@ -50,6 +50,8 @@ class StitchingResult {
 }
 
 /// Service de stitching sphérique - assemble en projection équirectangulaire
+/// Inspiré de la méthode de projection inverse (reverse mapping) pour un
+/// rendu propre sans trous.
 class StitchingService {
   /// Assemble les photos en panorama sphérique 360°
   Future<Panorama> stitchPanorama(
@@ -122,17 +124,20 @@ class StitchingService {
   }
 
   /// Stitching sphérique dans un isolate
+  /// Utilise la méthode « reverse mapping » : pour chaque pixel de l'image
+  /// équirectangulaire de sortie, on calcule quelle photo source contient
+  /// ce point et on y lit la couleur. Cela évite les trous.
   static Future<void> _stitchInIsolate(StitchingParams params) async {
     try {
       final photos = params.photos;
       final outputPath = params.outputPath;
       final sendPort = params.sendPort;
 
-      // Phase 1: Charger et redimensionner toutes les images
+      // Phase 1: Charger toutes les images
       final List<_LoadedPhoto> loadedPhotos = [];
       for (int i = 0; i < photos.length; i++) {
         sendPort.send(
-          StitchingResult(success: false, progress: (i / photos.length) * 0.5),
+          StitchingResult(success: false, progress: (i / photos.length) * 0.4),
         );
 
         final file = File(photos[i].path);
@@ -148,8 +153,8 @@ class StitchingService {
           return;
         }
 
-        // Redimensionner
-        final resized = _resizeImage(image, 800);
+        // Redimensionner à une taille raisonnable pour le traitement
+        final resized = _resizeImage(image, 1200);
         loadedPhotos.add(
           _LoadedPhoto(
             image: resized,
@@ -159,19 +164,24 @@ class StitchingService {
         );
       }
 
-      sendPort.send(const StitchingResult(success: false, progress: 0.6));
+      sendPort.send(const StitchingResult(success: false, progress: 0.45));
 
-      // Phase 2: Projeter sur une image équirectangulaire
-      final equirect = _projectToEquirectangular(loadedPhotos);
+      // Phase 2: Projeter via reverse mapping
+      final equirect = _reverseMapToEquirectangular(loadedPhotos, sendPort);
 
       sendPort.send(const StitchingResult(success: false, progress: 0.85));
 
-      // Phase 3: Post-traitement
+      // Phase 3: Remplir les trous restants (régions polaires non couvertes)
+      _fillHolesMultiPass(equirect);
+
+      sendPort.send(const StitchingResult(success: false, progress: 0.90));
+
+      // Phase 4: Post-traitement
       final balanced = _balanceColors(equirect);
 
       sendPort.send(const StitchingResult(success: false, progress: 0.95));
 
-      // Phase 4: Sauvegarder
+      // Phase 5: Sauvegarder
       final outputFile = File(outputPath);
       await outputFile.writeAsBytes(
         img.encodeJpg(balanced, quality: AppConstants.jpegQuality),
@@ -187,163 +197,205 @@ class StitchingService {
     }
   }
 
-  /// Projette toutes les photos sur une image équirectangulaire
-  static img.Image _projectToEquirectangular(List<_LoadedPhoto> photos) {
+  /// Projection inverse : pour chaque pixel de l'équirectangulaire,
+  /// on trouve dans quelle(s) photo(s) source il se projette et on
+  /// fait un blending pondéré.
+  static img.Image _reverseMapToEquirectangular(
+    List<_LoadedPhoto> photos,
+    SendPort sendPort,
+  ) {
     final int outW = AppConstants.equirectWidth;
     final int outH = AppConstants.equirectHeight;
     final equirect = img.Image(width: outW, height: outH);
 
-    // Remplir de noir
-    for (int y = 0; y < outH; y++) {
-      for (int x = 0; x < outW; x++) {
-        equirect.setPixel(x, y, img.ColorRgba8(0, 0, 0, 255));
+    // FOV de la caméra
+    final double hFovRad = AppConstants.cameraHFov * math.pi / 180;
+    final double vFovRad = AppConstants.cameraVFov * math.pi / 180;
+
+    // Pré-calculer les directions de chaque photo (vecteur central)
+    final List<_PhotoProjection> projections = photos.map((p) {
+      final azRad = p.azimuth * math.pi / 180;
+      final elRad = p.elevation * math.pi / 180;
+      return _PhotoProjection(
+        photo: p,
+        azRad: azRad,
+        elRad: elRad,
+        hFovRad: hFovRad,
+        vFovRad: vFovRad,
+        cosAz: math.cos(azRad),
+        sinAz: math.sin(azRad),
+        cosEl: math.cos(elRad),
+        sinEl: math.sin(elRad),
+      );
+    }).toList();
+
+    // Pour chaque pixel de sortie
+    for (int eqY = 0; eqY < outH; eqY++) {
+      // Envoyer la progression
+      if (eqY % 100 == 0) {
+        final prog = 0.45 + (eqY / outH) * 0.4;
+        sendPort.send(StitchingResult(success: false, progress: prog));
       }
-    }
 
-    // Poids pour le blending entre photos qui se chevauchent
-    final weightMap = List.generate(outH, (_) => List.filled(outW, 0.0));
-    final rMap = List.generate(outH, (_) => List.filled(outW, 0.0));
-    final gMap = List.generate(outH, (_) => List.filled(outW, 0.0));
-    final bMap = List.generate(outH, (_) => List.filled(outW, 0.0));
+      for (int eqX = 0; eqX < outW; eqX++) {
+        // Convertir pixel → latitude/longitude
+        // longitude: 0 à 2π (gauche à droite)
+        // latitude: π/2 à -π/2 (haut à bas)
+        final double lon = (eqX / outW) * 2.0 * math.pi - math.pi;
+        final double lat = (0.5 - eqY / outH) * math.pi;
 
-    // FOV estimé de la caméra (en degrés)
-    const double hFov = 65.0;
-    const double vFov = 50.0;
-    final double hFovRad = hFov * math.pi / 180;
-    final double vFovRad = vFov * math.pi / 180;
+        // Direction 3D correspondant à ce pixel
+        final double dirX = math.cos(lat) * math.sin(lon);
+        final double dirY = math.sin(lat);
+        final double dirZ = math.cos(lat) * math.cos(lon);
 
-    for (final photo in photos) {
-      final int imgW = photo.image.width;
-      final int imgH = photo.image.height;
-      final double azRad = photo.azimuth * math.pi / 180;
-      final double elRad = photo.elevation * math.pi / 180;
+        // Chercher dans chaque photo source si ce rayon y tombe
+        double sumR = 0, sumG = 0, sumB = 0, sumW = 0;
 
-      // Pour chaque pixel de la photo source, calculer où il se projette
-      // dans l'image équirectangulaire
-      for (int py = 0; py < imgH; py++) {
-        for (int px = 0; px < imgW; px++) {
-          // Coordonnées normalisées dans la photo (-0.5 à 0.5)
-          final double nx = (px / imgW) - 0.5;
-          final double ny = (py / imgH) - 0.5;
+        for (final proj in projections) {
+          // Appliquer la rotation inverse de la caméra
+          // (on transforme le rayon global → repère local de la caméra)
 
-          // Angles dans le repère de la caméra
-          final double localAz = nx * hFovRad;
-          final double localEl = -ny * vFovRad;
+          // Rotation inverse autour de Y (azimut)
+          final double rx = dirX * proj.cosAz - dirZ * proj.sinAz;
+          final double rz = dirX * proj.sinAz + dirZ * proj.cosAz;
 
-          // Transformer en coordonnées sphériques globales
-          // Rotation autour de l'axe vertical (azimut) puis horizontal (élévation)
-          final double cosLocalEl = math.cos(localEl);
-          final double sinLocalEl = math.sin(localEl);
-          final double cosLocalAz = math.cos(localAz);
-          final double sinLocalAz = math.sin(localAz);
+          // Rotation inverse autour de X (élévation)
+          final double ry = dirY * proj.cosEl + rz * proj.sinEl;
+          final double rz2 = -dirY * proj.sinEl + rz * proj.cosEl;
 
-          // Vecteur direction dans le repère caméra
-          double dx = cosLocalEl * sinLocalAz;
-          double dy = sinLocalEl;
-          double dz = cosLocalEl * cosLocalAz;
+          // Si le point est derrière la caméra, ignorer
+          if (rz2 <= 0.01) continue;
 
-          // Rotation par l'élévation de la caméra (autour de l'axe X)
-          final double cosEl = math.cos(elRad);
-          final double sinEl = math.sin(elRad);
-          final double dy2 = dy * cosEl - dz * sinEl;
-          final double dz2 = dy * sinEl + dz * cosEl;
+          // Projeter sur le plan image (perspective pinhole)
+          final double localAz = math.atan2(rx, rz2);
+          final double localEl = math.atan2(ry, rz2);
 
-          // Rotation par l'azimut de la caméra (autour de l'axe Y)
-          final double cosAz = math.cos(azRad);
-          final double sinAz = math.sin(azRad);
-          final double dx3 = dx * cosAz + dz2 * sinAz;
-          final double dz3 = -dx * sinAz + dz2 * cosAz;
+          // Vérifier si on est dans le FOV
+          if (localAz.abs() > hFovRad * 0.52) continue;
+          if (localEl.abs() > vFovRad * 0.52) continue;
 
-          // Convertir en latitude/longitude
-          final double r = math.sqrt(dx3 * dx3 + dy2 * dy2 + dz3 * dz3);
-          final double lat = math.asin((dy2 / r).clamp(-1.0, 1.0));
-          double lon = math.atan2(dx3, dz3);
+          // Convertir en coordonnées pixel de l'image source
+          final double nx = localAz / hFovRad + 0.5;
+          final double ny = 0.5 - localEl / vFovRad;
 
-          // Convertir en coordonnées pixel sur l'équirectangulaire
-          // lon: -π à +π → 0 à outW
-          // lat: -π/2 à +π/2 → outH à 0
-          final int eqX = ((lon / math.pi + 1) * 0.5 * outW).round() % outW;
-          final int eqY = ((0.5 - lat / math.pi) * outH).round().clamp(
-            0,
-            outH - 1,
-          );
+          final int imgW = proj.photo.image.width;
+          final int imgH = proj.photo.image.height;
+          final int px = (nx * imgW).round().clamp(0, imgW - 1);
+          final int py = (ny * imgH).round().clamp(0, imgH - 1);
 
           // Poids basé sur la distance au centre de l'image
-          // (les bords sont moins fiables à cause de la distorsion)
-          final double distFromCenter = math.sqrt(nx * nx + ny * ny) / 0.7071;
-          final double weight = math.max(
-            0.0,
-            1.0 - distFromCenter * distFromCenter,
+          // Centre = plus fiable, bords = distorsion
+          final double distFromCenter = math.sqrt(
+            (nx - 0.5) * (nx - 0.5) + (ny - 0.5) * (ny - 0.5),
           );
+          // Falloff doux avec cos^2
+          final double maxDist = 0.5;
+          final double normDist = (distFromCenter / maxDist).clamp(0.0, 1.0);
+          final double weight = math
+              .pow(math.cos(normDist * math.pi / 2), 2)
+              .toDouble();
 
-          if (weight > 0.01) {
-            final pixel = photo.image.getPixel(px, py);
-            rMap[eqY][eqX] += pixel.r * weight;
-            gMap[eqY][eqX] += pixel.g * weight;
-            bMap[eqY][eqX] += pixel.b * weight;
-            weightMap[eqY][eqX] += weight;
-          }
-        }
-      }
-    }
-
-    // Normaliser par les poids
-    for (int y = 0; y < outH; y++) {
-      for (int x = 0; x < outW; x++) {
-        if (weightMap[y][x] > 0) {
-          final w = weightMap[y][x];
-          final r = (rMap[y][x] / w).round().clamp(0, 255);
-          final g = (gMap[y][x] / w).round().clamp(0, 255);
-          final b = (bMap[y][x] / w).round().clamp(0, 255);
-          equirect.setPixel(x, y, img.ColorRgba8(r, g, b, 255));
-        }
-      }
-    }
-
-    // Remplir les trous par interpolation simple
-    _fillHoles(equirect, weightMap);
-
-    return equirect;
-  }
-
-  /// Remplit les pixels non couverts par interpolation des voisins
-  static void _fillHoles(img.Image image, List<List<double>> weightMap) {
-    final int w = image.width;
-    final int h = image.height;
-    const int kernelSize = 5;
-
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        if (weightMap[y][x] > 0) continue;
-
-        double sumR = 0, sumG = 0, sumB = 0, sumW = 0;
-        for (int ky = -kernelSize; ky <= kernelSize; ky++) {
-          for (int kx = -kernelSize; kx <= kernelSize; kx++) {
-            final int nx = (x + kx) % w;
-            final int ny = (y + ky).clamp(0, h - 1);
-            if (weightMap[ny][nx] > 0) {
-              final dist = math.sqrt((kx * kx + ky * ky).toDouble());
-              final weight = 1.0 / (1.0 + dist);
-              final pixel = image.getPixel(nx, ny);
-              sumR += pixel.r * weight;
-              sumG += pixel.g * weight;
-              sumB += pixel.b * weight;
-              sumW += weight;
-            }
+          if (weight > 0.001) {
+            final pixel = proj.photo.image.getPixel(px, py);
+            sumR += pixel.r * weight;
+            sumG += pixel.g * weight;
+            sumB += pixel.b * weight;
+            sumW += weight;
           }
         }
 
         if (sumW > 0) {
-          image.setPixel(
-            x,
-            y,
-            img.ColorRgba8(
-              (sumR / sumW).round().clamp(0, 255),
-              (sumG / sumW).round().clamp(0, 255),
-              (sumB / sumW).round().clamp(0, 255),
-              255,
-            ),
-          );
+          final r = (sumR / sumW).round().clamp(0, 255);
+          final g = (sumG / sumW).round().clamp(0, 255);
+          final b = (sumB / sumW).round().clamp(0, 255);
+          equirect.setPixel(eqX, eqY, img.ColorRgba8(r, g, b, 255));
+        } else {
+          // Pixel non couvert — sera rempli par _fillHoles
+          equirect.setPixel(eqX, eqY, img.ColorRgba8(0, 0, 0, 0));
+        }
+      }
+    }
+
+    return equirect;
+  }
+
+  /// Remplit les pixels non couverts par expansion itérative
+  /// (plusieurs passes avec un kernel croissant)
+  static void _fillHolesMultiPass(img.Image image) {
+    final int w = image.width;
+    final int h = image.height;
+
+    // Marquer les pixels couverts
+    final covered = List.generate(h, (_) => List.filled(w, false));
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final pixel = image.getPixel(x, y);
+        covered[y][x] = pixel.a > 0;
+      }
+    }
+
+    // Plusieurs passes avec kernel croissant
+    for (int pass = 0; pass < 8; pass++) {
+      final int kernelSize = pass < 3 ? 2 : (pass < 5 ? 4 : 8);
+      bool anyFilled = false;
+
+      final newPixels = <_PendingPixel>[];
+
+      for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+          if (covered[y][x]) continue;
+
+          double sumR = 0, sumG = 0, sumB = 0, sumW = 0;
+          for (int ky = -kernelSize; ky <= kernelSize; ky++) {
+            for (int kx = -kernelSize; kx <= kernelSize; kx++) {
+              // Wrap horizontal pour la continuité panoramique
+              final int nx = (x + kx) % w;
+              final int ny = (y + ky).clamp(0, h - 1);
+              if (covered[ny][nx]) {
+                final dist = math.sqrt((kx * kx + ky * ky).toDouble());
+                final weight = 1.0 / (1.0 + dist);
+                final pixel = image.getPixel(nx, ny);
+                sumR += pixel.r * weight;
+                sumG += pixel.g * weight;
+                sumB += pixel.b * weight;
+                sumW += weight;
+              }
+            }
+          }
+
+          if (sumW > 0) {
+            newPixels.add(
+              _PendingPixel(
+                x: x,
+                y: y,
+                r: (sumR / sumW).round().clamp(0, 255),
+                g: (sumG / sumW).round().clamp(0, 255),
+                b: (sumB / sumW).round().clamp(0, 255),
+              ),
+            );
+            anyFilled = true;
+          }
+        }
+      }
+
+      // Appliquer les nouveaux pixels
+      for (final p in newPixels) {
+        image.setPixel(p.x, p.y, img.ColorRgba8(p.r, p.g, p.b, 255));
+        covered[p.y][p.x] = true;
+      }
+
+      if (!anyFilled) break;
+    }
+
+    // Remplir tout pixel restant avec un gris neutre (pour les pôles non couverts)
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        if (!covered[y][x]) {
+          // Utiliser un dégradé vers les pôles (gris plus sombre)
+          final latFactor = (y / h - 0.5).abs() * 2; // 0 au centre, 1 aux pôles
+          final gray = (30 + 20 * (1 - latFactor)).round().clamp(0, 255);
+          image.setPixel(x, y, img.ColorRgba8(gray, gray, gray, 255));
         }
       }
     }
@@ -368,8 +420,8 @@ class StitchingService {
   static img.Image _balanceColors(img.Image image) {
     return img.adjustColor(
       image,
-      contrast: 1.03,
-      saturation: 1.05,
+      contrast: 1.02,
+      saturation: 1.03,
       brightness: 1.01,
     );
   }
@@ -388,6 +440,31 @@ class StitchingService {
   }
 }
 
+/// Données de projection pré-calculées pour une photo
+class _PhotoProjection {
+  final _LoadedPhoto photo;
+  final double azRad;
+  final double elRad;
+  final double hFovRad;
+  final double vFovRad;
+  final double cosAz;
+  final double sinAz;
+  final double cosEl;
+  final double sinEl;
+
+  const _PhotoProjection({
+    required this.photo,
+    required this.azRad,
+    required this.elRad,
+    required this.hFovRad,
+    required this.vFovRad,
+    required this.cosAz,
+    required this.sinAz,
+    required this.cosEl,
+    required this.sinEl,
+  });
+}
+
 /// Photo chargée en mémoire avec ses métadonnées
 class _LoadedPhoto {
   final img.Image image;
@@ -398,5 +475,17 @@ class _LoadedPhoto {
     required this.image,
     required this.azimuth,
     required this.elevation,
+  });
+}
+
+/// Pixel en attente d'écriture (pour le fill-holes)
+class _PendingPixel {
+  final int x, y, r, g, b;
+  const _PendingPixel({
+    required this.x,
+    required this.y,
+    required this.r,
+    required this.g,
+    required this.b,
   });
 }

@@ -47,6 +47,7 @@ class DeviceOrientation3D {
 }
 
 /// Service de gestion de la caméra pour capture sphérique 360°
+/// Inspiré de Google Street View : couverture complète de la sphère
 class CameraService {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
@@ -64,6 +65,15 @@ class CameraService {
     pitch: 0,
     roll: 0,
   );
+
+  // ── Hold-steady : l'utilisateur doit rester stable ~240ms (rapide) ──
+  int _nearTargetFrames = 0;
+  static const _requiredNearFrames = 8; // ~240ms à 33Hz
+  bool _confirmedNear = false;
+
+  // ── Throttle des callbacks UI (~30 FPS pour fluidité max) ──
+  DateTime _lastUIUpdate = DateTime(2000);
+  static const _uiUpdateInterval = Duration(milliseconds: 32);
 
   // ── Sensor subscriptions ──
   StreamSubscription? _accelSub;
@@ -89,9 +99,16 @@ class CameraService {
   List<CaptureTarget> _targets = [];
   int _currentTargetIndex = 0;
 
+  // ── Suivi des captures (indices des targets capturés) ──
+  final Set<int> _capturedTargetIndices = {};
+
   // ── Callbacks ──
   void Function(DeviceOrientation3D)? onOrientationChanged;
   void Function(CaptureTarget, bool isNear)? onTargetProximityChanged;
+
+  /// Appelé automatiquement quand le hold-steady est confirmé
+  /// → la capture se déclenche sans appui sur le bouton
+  void Function()? onAutoCapture;
 
   // ── Getters ──
   CameraController? get controller => _controller;
@@ -100,6 +117,7 @@ class CameraService {
   DeviceOrientation3D get currentOrientation => _currentOrientation;
   List<CaptureTarget> get targets => _targets;
   int get currentTargetIndex => _currentTargetIndex.clamp(0, _targets.length);
+  Set<int> get capturedTargetIndices => _capturedTargetIndices;
 
   CaptureTarget? get currentTarget {
     if (_currentTargetIndex < 0 || _currentTargetIndex >= _targets.length) {
@@ -119,7 +137,7 @@ class CameraService {
   /// Vérifie si le téléphone est dans la bonne position pour la cible courante
   bool get isNearCurrentTarget {
     if (currentTarget == null) return false;
-    return _isNearTarget(currentTarget!);
+    return _confirmedNear;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -127,24 +145,31 @@ class CameraService {
   // ═══════════════════════════════════════════════════════════════════════
 
   /// Génère tous les points de capture sphérique
+  /// Ordre optimisé comme Google Street View : commence par l'horizon,
+  /// puis monte progressivement, puis descend
   void _generateTargets() {
     _targets = [];
+    _capturedTargetIndices.clear();
 
-    // Commencer par la rangée horizontale (row 1 = 0°) pour une meilleure UX
-    // Puis haut (row 0) et bas (row 2)
-    final rowOrder = [1, 0, 2]; // horizontal d'abord
+    // Ordre de capture optimisé pour l'expérience utilisateur :
+    // Horizon d'abord (le plus naturel), puis haut, zénith, bas, nadir
+    final rowOrder = [2, 1, 0, 3, 4]; // index dans rowElevations
 
     for (final row in rowOrder) {
       final int photosInRow = AppConstants.photosPerRow[row];
       final double elevation = AppConstants.rowElevations[row];
       final double azimuthStep = 360.0 / photosInRow;
 
+      // Offset alterné entre les rangées pour un meilleur recouvrement
+      final double azimuthOffset = (row % 2 == 0) ? 0.0 : azimuthStep / 2;
+
       for (int i = 0; i < photosInRow; i++) {
+        final azimuth = (i * azimuthStep + azimuthOffset) % 360;
         _targets.add(
           CaptureTarget(
             rowIndex: row,
             indexInRow: i,
-            azimuth: i * azimuthStep,
+            azimuth: azimuth,
             elevation: elevation,
           ),
         );
@@ -183,7 +208,6 @@ class CameraService {
       _startSensors();
 
       // Attendre que le pipeline natif Android soit complètement prêt
-      // (ImageReader). Sans ce délai, takePicture() lance NullPointerException.
       await Future.delayed(const Duration(milliseconds: 800));
 
       await _lockExposureAndFocus();
@@ -198,12 +222,14 @@ class CameraService {
   // ═══════════════════════════════════════════════════════════════════════
 
   /// Démarre l'écoute des capteurs
+  /// Fréquence standard (33Hz) + filtre modéré pour une bonne réactivité
   void _startSensors() {
-    // Accéléromètre pour gravity
+    // Accéléromètre pour gravity — 30ms = ~33Hz
     _accelSub =
         accelerometerEventStream(
-          samplingPeriod: const Duration(milliseconds: 20),
+          samplingPeriod: const Duration(milliseconds: 30),
         ).listen((event) {
+          // Alpha 0.15 = bon compromis réactivité/stabilité
           const alpha = 0.15;
           _gravity[0] = alpha * event.x + (1 - alpha) * _gravity[0];
           _gravity[1] = alpha * event.y + (1 - alpha) * _gravity[1];
@@ -212,10 +238,10 @@ class CameraService {
           _updateOrientation();
         });
 
-    // Magnétomètre pour la direction
+    // Magnétomètre pour la direction — 30ms = ~33Hz
     _magnetSub =
         magnetometerEventStream(
-          samplingPeriod: const Duration(milliseconds: 20),
+          samplingPeriod: const Duration(milliseconds: 30),
         ).listen((event) {
           const alpha = 0.15;
           _magnetic[0] = alpha * event.x + (1 - alpha) * _magnetic[0];
@@ -254,11 +280,12 @@ class CameraService {
     if (rawAzimuth < 0) rawAzimuth += 360;
 
     // ── Low-pass filter sur l'azimut avec gestion du wrap-around ──
+    // Alpha 0.15 = plus réactif pour suivre la main de l'utilisateur
     if (!_azimuthInitialized) {
       _filteredAzimuth = rawAzimuth;
       _azimuthInitialized = true;
     } else {
-      const alpha = 0.1;
+      const alpha = 0.15;
       double diff = rawAzimuth - _filteredAzimuth;
       // Normaliser la différence dans [-180, 180]
       if (diff > 180) diff -= 360;
@@ -267,7 +294,8 @@ class CameraService {
       if (_filteredAzimuth < 0) _filteredAzimuth += 360;
     }
 
-    _filteredPitch = 0.1 * pitch + 0.9 * _filteredPitch;
+    // Pitch aussi plus réactif
+    _filteredPitch = 0.15 * pitch + 0.85 * _filteredPitch;
 
     // ── Stabiliser la référence avant de l'utiliser ──
     if (_referenceAzimuth == null) {
@@ -292,14 +320,35 @@ class CameraService {
       roll: 0,
     );
 
-    onOrientationChanged?.call(_currentOrientation);
+    // ── Throttle les mises à jour UI pour éviter le flood ──
+    final now = DateTime.now();
+    if (now.difference(_lastUIUpdate) >= _uiUpdateInterval) {
+      _lastUIUpdate = now;
+      onOrientationChanged?.call(_currentOrientation);
+    }
 
-    // Vérifier la proximité de la cible (seulement si pas en cooldown)
+    // ── Vérifier la proximité avec hold-steady ──
     if (currentTarget != null && !isComplete) {
-      final isInCooldown =
-          DateTime.now().difference(_lastCaptureTime) < _captureCooldown;
-      final isNear = !isInCooldown && _isNearTarget(currentTarget!);
-      onTargetProximityChanged?.call(currentTarget!, isNear);
+      final isInCooldown = now.difference(_lastCaptureTime) < _captureCooldown;
+      final isNearRaw = !isInCooldown && _isNearTarget(currentTarget!);
+
+      if (isNearRaw) {
+        // Incrémenter le compteur de frames stables
+        _nearTargetFrames++;
+        if (_nearTargetFrames >= _requiredNearFrames && !_confirmedNear) {
+          _confirmedNear = true;
+          onTargetProximityChanged?.call(currentTarget!, true);
+          // ★ Capture automatique !
+          onAutoCapture?.call();
+        }
+      } else {
+        // On sort de la zone → reset
+        if (_confirmedNear || _nearTargetFrames > 0) {
+          _nearTargetFrames = 0;
+          _confirmedNear = false;
+          onTargetProximityChanged?.call(currentTarget!, false);
+        }
+      }
     }
   }
 
@@ -313,7 +362,16 @@ class CameraService {
 
     final elevationDiff = (_currentOrientation.pitch - target.elevation).abs();
 
-    return azimuthDiff.abs() < AppConstants.angleTolerance &&
+    // Tolérance plus large pour les rangées près des pôles
+    // (car les points sont plus proches en longitude)
+    double azTolerance = AppConstants.angleTolerance;
+    if (target.elevation.abs() > 60) {
+      azTolerance *= 2.0; // Double tolérance pour zénith/nadir (très facile)
+    } else if (target.elevation.abs() > 30) {
+      azTolerance *= 1.25; // +25% pour les rangées intermédiaires
+    }
+
+    return azimuthDiff.abs() < azTolerance &&
         elevationDiff < AppConstants.elevationTolerance;
   }
 
@@ -382,6 +440,9 @@ class CameraService {
         indexInRow: target.indexInRow,
       );
 
+      // Marquer cette cible comme capturée
+      _capturedTargetIndices.add(_currentTargetIndex);
+
       // Passer à la cible suivante (clampé)
       if (_currentTargetIndex < _targets.length) {
         _currentTargetIndex++;
@@ -389,8 +450,12 @@ class CameraService {
 
       _lastCaptureTime = DateTime.now();
 
-      // Délai pour le pipeline Android
-      await Future.delayed(const Duration(milliseconds: 300));
+      // Reset hold-steady pour la prochaine cible
+      _nearTargetFrames = 0;
+      _confirmedNear = false;
+
+      // Délai minimum pour laisser le temps au pipeline caméra
+      await Future.delayed(const Duration(milliseconds: 150));
 
       return photo;
     } catch (e) {
@@ -401,7 +466,6 @@ class CameraService {
   }
 
   /// Tente de prendre la photo avec jusqu'à 3 retries
-  /// pour contourner les erreurs transitoires d'ImageReader sur Android
   Future<XFile> _takePictureWithRetry({int maxRetries = 3}) async {
     for (int attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -424,10 +488,13 @@ class CameraService {
   /// Réinitialise la capture
   void reset() {
     _currentTargetIndex = 0;
+    _capturedTargetIndices.clear();
     _referenceAzimuth = null;
     _stableFrames = 0;
     _azimuthInitialized = false;
     _isTakingPicture = false;
+    _nearTargetFrames = 0;
+    _confirmedNear = false;
     _lastCaptureTime = DateTime(2000);
     _generateTargets();
   }

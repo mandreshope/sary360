@@ -1,30 +1,48 @@
 /// Constants pour l'application Sary360 - Capture sphérique 360°
+/// Inspiré de Google Street View : couverture complète de la sphère
 class AppConstants {
   // ── Capture sphérique settings ──
-  /// Nombre de rangées verticales (haut, milieu, bas)
-  static const int numberOfRows = 3;
+  /// Nombre de rangées verticales (du zénith au nadir)
+  /// 5 rangées : zénith, haute, horizon, basse, nadir
+  static const int numberOfRows = 5;
 
   /// Angles d'élévation pour chaque rangée (en degrés)
-  /// -60° = vers le haut, 0° = horizontal, +60° = vers le bas
-  static const List<double> rowElevations = [-50.0, 0.0, 50.0];
+  /// Couverture complète de -90° (nadir) à +90° (zénith)
+  /// Convention: positif = vers le haut, négatif = vers le bas
+  static const List<double> rowElevations = [
+    75.0, // Zénith (presque tout en haut)
+    35.0, // Haute
+    0.0, // Horizon
+    -35.0, // Basse
+    -75.0, // Nadir (presque tout en bas)
+  ];
 
   /// Nombre de photos par rangée
-  static const List<int> photosPerRow = [8, 12, 8];
+  /// Réduit pour une expérience plus rapide tout en gardant une bonne couverture
+  /// Le FOV large de la caméra compense le nombre réduit de photos
+  static const List<int> photosPerRow = [
+    3, // Zénith (75°) - petit cercle, 3 suffit
+    6, // Haute (35°)
+    8, // Horizon (0°) - cercle complet
+    6, // Basse (-35°)
+    3, // Nadir (-75°) - petit cercle
+  ];
 
   /// Nombre total de photos
   static int get totalPhotos =>
       photosPerRow.fold(0, (sum, count) => sum + count);
 
   /// Tolérance angulaire pour valider la position (en degrés)
-  static const double angleTolerance = 12.0;
+  /// Large pour une expérience fluide — le chevauchement des photos compense
+  static const double angleTolerance = 25.0;
 
   /// Tolérance d'élévation pour valider la rangée (en degrés)
-  static const double elevationTolerance = 15.0;
+  static const double elevationTolerance = 22.0;
 
   // ── Image processing ──
   static const int maxImageWidth = 1920;
   static const int maxImageHeight = 1080;
-  static const int jpegQuality = 85;
+  static const int jpegQuality = 90;
 
   // ── Equirectangular output ──
   /// Largeur de l'image équirectangulaire finale
@@ -34,6 +52,13 @@ class AppConstants {
   static const int equirectHeight = 2048;
 
   // ── Camera settings ──
+  /// FOV horizontal estimé de la caméra (en degrés)
+  /// Valeur généreuse pour un bon recouvrement entre photos
+  static const double cameraHFov = 75.0;
+
+  /// FOV vertical estimé de la caméra (en degrés)
+  static const double cameraVFov = 60.0;
+
   static const double defaultExposure = 0.0;
   static const double defaultZoom = 1.0;
 
@@ -44,4 +69,13 @@ class AppConstants {
   // ── UI ──
   static const String appName = 'Sary360';
   static const String appVersion = '1.0.0';
+
+  /// Noms des rangées pour l'affichage
+  static const List<String> rowNames = [
+    'Zénith ↑',
+    'Haute ↗',
+    'Horizon →',
+    'Basse ↘',
+    'Nadir ↓',
+  ];
 }

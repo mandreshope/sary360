@@ -5,7 +5,7 @@ import 'package:camera/camera.dart';
 import '../viewmodels/capture_viewmodel.dart';
 import '../widgets/progress_indicator.dart';
 import '../widgets/spherical_guide.dart';
-import '../widgets/capture_button.dart';
+
 import 'viewer_page.dart';
 
 class CapturePage extends ConsumerStatefulWidget {
@@ -141,7 +141,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           child: Center(child: _buildInstructionBadge(viewModel)),
         ),
 
-        // Guide sphérique en haut à droite
+        // Guide sphérique 3D en haut à droite
         Positioned(
           top: 60,
           right: 16,
@@ -153,6 +153,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
             isNearTarget: viewModel.isNearTarget,
             totalTargets: viewModel.totalTargets,
             capturedCount: viewModel.capturedPhotos.length,
+            allTargets: viewModel.allTargetPoints,
           ),
         ),
 
@@ -182,46 +183,124 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           ),
         ),
 
-        // Bouton de capture (ou indicateur pendant la capture)
+        // Indicateur de capture automatique (pas de bouton)
         Positioned(
           bottom: 30,
           left: 0,
           right: 0,
-          child: Center(
-            child: viewModel.state == CaptureState.capturing
-                ? Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.black.withValues(alpha: 0.5),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.3),
-                        width: 3,
-                      ),
-                    ),
-                    child: const Center(
-                      child: SizedBox(
-                        width: 30,
-                        height: 30,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: Colors.cyanAccent,
-                        ),
-                      ),
-                    ),
-                  )
-                : CaptureButton(
-                    enabled: viewModel.canCapture,
-                    onPressed: () {
-                      ref
-                          .read(captureViewModelProvider.notifier)
-                          .captureCurrentTarget();
-                    },
-                  ),
-          ),
+          child: Center(child: _buildAutoCaptureIndicator(viewModel)),
         ),
       ],
+    );
+  }
+
+  /// Indicateur de capture automatique
+  /// Montre l'état : en cours de capture, aligné (prêt), ou en attente d'alignement
+  Widget _buildAutoCaptureIndicator(CaptureViewState viewModel) {
+    if (viewModel.state == CaptureState.capturing) {
+      // Capture en cours — spinner
+      return Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.black.withValues(alpha: 0.5),
+          border: Border.all(
+            color: Colors.greenAccent.withValues(alpha: 0.6),
+            width: 3,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.greenAccent.withValues(alpha: 0.3),
+              blurRadius: 20,
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+        child: const Center(
+          child: SizedBox(
+            width: 30,
+            height: 30,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: Colors.greenAccent,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (viewModel.isNearTarget) {
+      // Aligné et stabilisation en cours — cercle vert pulsant
+      return TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0.8, end: 1.0),
+        duration: const Duration(milliseconds: 400),
+        builder: (context, scale, child) {
+          return Transform.scale(
+            scale: scale,
+            child: Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.greenAccent.withValues(alpha: 0.15),
+                border: Border.all(color: Colors.greenAccent, width: 3),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.greenAccent.withValues(alpha: 0.4),
+                    blurRadius: 25,
+                    spreadRadius: 5,
+                  ),
+                ],
+              ),
+              child: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.check, color: Colors.greenAccent, size: 28),
+                  Text(
+                    'STABLE',
+                    style: TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    // En attente d'alignement — indicateur auto-capture
+    return Container(
+      width: 80,
+      height: 80,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.black.withValues(alpha: 0.4),
+        border: Border.all(
+          color: Colors.cyanAccent.withValues(alpha: 0.4),
+          width: 2,
+        ),
+      ),
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.adjust, color: Colors.cyanAccent, size: 28),
+          Text(
+            'AUTO',
+            style: TextStyle(
+              color: Colors.cyanAccent,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.5,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -257,8 +336,11 @@ class _CapturePageState extends ConsumerState<CapturePage> {
     final String instruction;
     final Color color;
 
-    if (viewModel.isNearTarget) {
-      instruction = '✅ Appuyez pour capturer !';
+    if (viewModel.state == CaptureState.capturing) {
+      instruction = '📸 Capture en cours...';
+      color = Colors.greenAccent;
+    } else if (viewModel.isNearTarget) {
+      instruction = '✅ Stabilisé — capture auto !';
       color = Colors.greenAccent;
     } else {
       // Calculer la direction
@@ -274,7 +356,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
       }
       if (elDiff.abs() > 10) {
         parts.add(
-          elDiff > 0 ? '↓ Inclinez vers le bas' : '↑ Inclinez vers le haut',
+          elDiff > 0 ? '↑ Inclinez vers le haut' : '↓ Inclinez vers le bas',
         );
       }
 
@@ -314,7 +396,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
   Widget _buildElevationIndicator(CaptureViewState viewModel) {
     return Container(
       width: 40,
-      height: 200,
+      height: 260,
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(20),
@@ -498,7 +580,7 @@ class _ReticlePainter extends CustomPainter {
       old.color != color || old.isNear != isNear;
 }
 
-/// Indicateur d'élévation vertical
+/// Indicateur d'élévation vertical - couvre -90° à +90°
 class _ElevationPainter extends CustomPainter {
   final double currentElevation;
   final double targetElevation;
@@ -512,30 +594,38 @@ class _ElevationPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final padding = 12.0;
+    final usableHeight = size.height - 2 * padding;
+
     // Mapper l'élévation (-90 à +90) sur la hauteur
-    final currentY = (0.5 - currentElevation / 180.0) * size.height;
-    final targetY = (0.5 - targetElevation / 180.0) * size.height;
+    // +90° (zénith) = haut, -90° (nadir) = bas
+    double elevationToY(double el) {
+      return padding + (0.5 - el / 180.0) * usableHeight;
+    }
+
+    final currentY = elevationToY(currentElevation);
+    final targetY = elevationToY(targetElevation);
 
     // Ligne centrale
     final linePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.3)
       ..strokeWidth = 1;
     canvas.drawLine(
-      Offset(size.width / 2, 10),
-      Offset(size.width / 2, size.height - 10),
+      Offset(size.width / 2, padding),
+      Offset(size.width / 2, size.height - padding),
       linePaint,
     );
 
-    // Marqueurs -90, 0, +90
-    final textPaint = Paint()..color = Colors.white.withValues(alpha: 0.5);
+    // Marqueurs d'élévation
     final textStyle = TextStyle(
       color: Colors.white.withValues(alpha: 0.5),
-      fontSize: 8,
+      fontSize: 7,
     );
+    final markerPaint = Paint()..color = Colors.white.withValues(alpha: 0.4);
 
-    for (final angle in [-60, 0, 60]) {
-      final y = (0.5 - angle / 180.0) * size.height;
-      canvas.drawCircle(Offset(size.width / 2, y), 2, textPaint);
+    for (final angle in [-75, -35, 0, 35, 75]) {
+      final y = elevationToY(angle.toDouble());
+      canvas.drawCircle(Offset(size.width / 2, y), 1.5, markerPaint);
 
       final textPainter = TextPainter(
         text: TextSpan(text: '$angle°', style: textStyle),
@@ -545,7 +635,7 @@ class _ElevationPainter extends CustomPainter {
         canvas,
         Offset(
           size.width / 2 - textPainter.width / 2,
-          y.clamp(10, size.height - 20) + 4,
+          y.clamp(padding, size.height - padding - 10) + 3,
         ),
       );
     }
@@ -555,21 +645,15 @@ class _ElevationPainter extends CustomPainter {
       ..color = isNear ? Colors.greenAccent : Colors.orangeAccent
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
-    canvas.drawLine(
-      Offset(4, targetY.clamp(10.0, size.height - 10)),
-      Offset(size.width - 4, targetY.clamp(10.0, size.height - 10)),
-      targetPaint,
-    );
+    final ty = targetY.clamp(padding, size.height - padding);
+    canvas.drawLine(Offset(4, ty), Offset(size.width - 4, ty), targetPaint);
 
     // Position courante
     final currentPaint = Paint()
       ..color = isNear ? Colors.greenAccent : Colors.cyan
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(
-      Offset(size.width / 2, currentY.clamp(10.0, size.height - 10)),
-      6,
-      currentPaint,
-    );
+    final cy = currentY.clamp(padding, size.height - padding);
+    canvas.drawCircle(Offset(size.width / 2, cy), 6, currentPaint);
   }
 
   @override
