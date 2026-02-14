@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
 import 'package:image/image.dart' as img;
-import 'package:opencv_dart/opencv_dart.dart' as cv;
+
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -124,108 +124,8 @@ class StitchingService {
     );
   }
 
-  /// Point d'entrée de l'isolate de stitching
+  /// Point d'entrée de l'isolate de stitching (Optimisé Dart sans dépendances natives)
   static Future<void> _stitchInIsolate(StitchingParams params) async {
-    // 1. Essayer avec OpenCV (Qualité "Google")
-    bool success = false;
-    try {
-      success = await _stitchWithOpenCV(params);
-    } catch (e) {
-      // OpenCV a échoué (souvent manque de features ou mémoire)
-      // On continue vers le fallback
-    }
-
-    if (success) return;
-
-    // 2. Fallback : Méthode manuelle (Reverse Mapping)
-    // Moins jolie mais robuste (marche toujours tant qu'il y a des photos)
-    await _stitchLegacy(params);
-  }
-
-  /// Stitching avec OpenCV (Sticher class)
-  /// Nécessite opencv_dart
-  static Future<bool> _stitchWithOpenCV(StitchingParams params) async {
-    final sendPort = params.sendPort;
-    final photos = params.photos;
-    final outputPath = params.outputPath;
-
-    sendPort.send(const StitchingResult(success: false, progress: 0.1));
-
-    // Charger les images en Mat
-    final List<cv.Mat> images = [];
-    try {
-      for (int i = 0; i < photos.length; i++) {
-        final mat = cv.imread(photos[i].path);
-        if (mat.isEmpty) continue;
-        images.add(mat);
-
-        sendPort.send(
-          StitchingResult(
-            success: false,
-            progress: 0.1 + (i / photos.length) * 0.2,
-          ),
-        );
-      }
-
-      if (images.length < 2) return false;
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.4));
-
-      // Créer le Stitcher
-      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.PANORAMA);
-
-      // Convertir en VecMat pour l'interop C++
-      final vecImages = cv.VecMat.fromList(images);
-      final (status, pano) = stitcher.stitch(vecImages);
-      vecImages.dispose();
-
-      if (status != cv.StitcherStatus.OK) {
-        // Erreur OpenCV (ex: ERR_NEED_MORE_IMGS)
-        return false;
-      }
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.8));
-
-      // Sauvegarder le résultat
-      // Convertir Mat -> Jpg bytes pour injecter XMP
-      final success = cv.imwrite(outputPath, pano);
-
-      if (success) {
-        // Réouvrir pour injecter XMP
-        final file = File(outputPath);
-        final bytes = await file.readAsBytes();
-        final width = pano.cols;
-        final height = pano.rows;
-
-        final injected = _injectXmpMetadata(bytes, width, height);
-        await file.writeAsBytes(injected);
-
-        sendPort.send(
-          StitchingResult(
-            success: true,
-            panoramaPath: outputPath,
-            progress: 1.0,
-          ),
-        );
-        return true;
-      }
-      return false;
-    } catch (e) {
-      // En cas de crash OpenCV
-      return false;
-    } finally {
-      // Nettoyage mémoire mémoire native
-      for (final img in images) {
-        img.dispose();
-      }
-      // pano est disposé automatiqument par dart ou pas ?
-      // opencv_dart gère le GC via Finalizer normalement, mais dispose() est mieux.
-    }
-  }
-
-  /// Stitching sphérique MANUEL (Fallback)
-  /// Utilise la méthode « reverse mapping »
-  static Future<void> _stitchLegacy(StitchingParams params) async {
     try {
       final photos = params.photos;
       final outputPath = params.outputPath;
@@ -385,9 +285,18 @@ class StitchingService {
           if (localAz.abs() > hFovRad * 0.52) continue;
           if (localEl.abs() > vFovRad * 0.52) continue;
 
-          // Convertir en coordonnées pixel de l'image source
-          final double nx = localAz / hFovRad + 0.5;
-          final double ny = 0.5 - localEl / vFovRad;
+          // Coordonnées plan image idéal (centré en 0,0)
+          final double u_ideal = localAz / hFovRad;
+          final double v_ideal = -localEl / vFovRad;
+
+          // Correction de distorsion (Barillet -> Pincushion pour compenser)
+          // k1 = -0.15 est une valeur moyenne pour grand angle mobile
+          final double r2 = u_ideal * u_ideal + v_ideal * v_ideal;
+          const double k1 = -0.15;
+          final double distFactor = 1.0 + k1 * r2;
+
+          final double nx = u_ideal * distFactor + 0.5;
+          final double ny = 0.5 + v_ideal * distFactor;
 
           final int imgW = proj.photo.image.width;
           final int imgH = proj.photo.image.height;
