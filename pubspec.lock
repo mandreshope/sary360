@@ -65,6 +65,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.3.5+3"
+  change_case:
+    dependency: transitive
+    description:
+      name: change_case
+      sha256: e41ef3df58521194ef8d7649928954805aeb08061917cf658322305e61568003
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.0"
   characters:
     dependency: transitive
     description:
@@ -81,6 +89,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.2"
+  code_assets:
+    dependency: transitive
+    description:
+      name: code_assets
+      sha256: "83ccdaa064c980b5596c35dd64a8d3ecc68620174ab9b90b6343b753aa721687"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   collection:
     dependency: transitive
     description:
@@ -105,6 +121,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.7"
+  dartcv4:
+    dependency: transitive
+    description:
+      name: dartcv4
+      sha256: "43dba49162662f3b6e3daf5a95d071429365e2f1ada67d412b851fc9be442e58"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.1+1"
   fake_async:
     dependency: transitive
     description:
@@ -121,6 +145,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.5"
+  file:
+    dependency: transitive
+    description:
+      name: file
+      sha256: a3b4f84adafef897088c160faf7dfffb7696046cb13ae90b508c2cbc95d3b8d4
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.0.1"
   flutter:
     dependency: "direct main"
     description: flutter
@@ -168,6 +200,22 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  glob:
+    dependency: transitive
+    description:
+      name: glob
+      sha256: c3f1ee72c96f8f78935e18aa8cecced9ab132419e8625dc187e1c2408efc20de
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.1.3"
+  hooks:
+    dependency: transitive
+    description:
+      name: hooks
+      sha256: "7a08a0d684cb3b8fb604b78455d5d352f502b68079f7b80b831c62220ab0a4f6"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.1"
   image:
     dependency: "direct main"
     description:
@@ -240,6 +288,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.17.0"
+  native_toolchain_cmake:
+    dependency: transitive
+    description:
+      name: native_toolchain_cmake
+      sha256: fe40e8483183ced98e851e08a9cd2a547fd412cccab98277aa23f2377e43d66f
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.4"
+  opencv_dart:
+    dependency: "direct main"
+    description:
+      name: opencv_dart
+      sha256: c2b7cc614cad69c2857e9b684e3066af662a03fe7100f4dc9a630e81ad42103a
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.1+1"
   path:
     dependency: transitive
     description:
@@ -376,6 +440,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.0.3"
+  pub_semver:
+    dependency: transitive
+    description:
+      name: pub_semver
+      sha256: "5bfcf68ca79ef689f8990d1160781b4bad40a3bd5e5218ad4076ddb7f4081585"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.0"
   riverpod:
     dependency: transitive
     description:
@@ -517,6 +589,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.6.1"
+  yaml:
+    dependency: transitive
+    description:
+      name: yaml
+      sha256: b9da305ac7c39faa3f030eccd175340f968459dae4af175130b3fc47e40d76ce
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.3"
 sdks:
   dart: ">=3.10.0 <4.0.0"
-  flutter: ">=3.35.0"
+  flutter: ">=3.38.1"

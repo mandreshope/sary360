@@ -51,6 +51,7 @@ dependencies:
   # 360 viewer (forked locally)
   flutter_cube: ^0.1.1
   sensors_plus: ^7.0.0
+  opencv_dart: ^2.2.1+1
   
   # UI utilities
 

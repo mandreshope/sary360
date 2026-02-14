@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../pages/capture_page.dart';
+import '../pages/gallery_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -93,7 +94,40 @@ class HomePage extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 24),
+
+                  // Bouton Galerie
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const GalleryPage()),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 32,
+                        vertical: 16,
+                      ),
+                      side: const BorderSide(color: Colors.white70, width: 2),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.photo_library),
+                        SizedBox(width: 12),
+                        Text(
+                          'Voir mes captures',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 48),
 
                   // Fonctionnalités
                   _buildFeatures(),
