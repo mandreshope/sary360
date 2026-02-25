@@ -136,6 +136,10 @@ class StitchingService {
       final outputPath = params.outputPath;
       final sendPort = params.sendPort;
 
+      // Désactiver OpenCL pour éviter les plantages (glob_rec error) liés à la
+      // recherche des pilotes GPU cachés empêchés par les Sandbox Android
+      cv.setUseOpenCL(false);
+
       // 1. Lire toutes les images dans OpenCV
       final cvImages = cv.VecMat();
       for (int i = 0; i < photos.length; i++) {
@@ -159,13 +163,18 @@ class StitchingService {
       sendPort.send(const StitchingResult(success: false, progress: 0.25));
 
       // 2. Initialiser le Stitcher OpenCV
-      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.PANORAMA);
+      // On utilise le mode SCANS au lieu de PANORAMA, cela désactive l'ajustement sévère
+      // de la caméra (focale, etc) qui plante souvent (ERR_CAMERA_PARAMS_ADJUST_FAIL)
+      // pour des photos imparfaites prises à la main.
+      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.SCANS);
 
       // Ajustements essentiels pour la stabilité sur mobile (mémoire)
       stitcher.compositingResol =
           0.6; // <- Réduit la taille pour éviter OOM et accélérer le rendu
       stitcher.panoConfidenceThresh =
-          0.5; // Tolérance pour matcher des zones plus difficiles
+          0.3; // Tolérance pour matcher des zones plus difficiles (0.3 au lieu de 1.0 par défaut)
+      stitcher.registrationResol =
+          0.3; // Aide considérablement l'ajustement de la caméra (empêche ERR_CAMERA_PARAMS_ADJUST_FAIL) en redimensionnant l'image pendant l'alignement.
 
       sendPort.send(const StitchingResult(success: false, progress: 0.30));
 
