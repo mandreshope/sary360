@@ -182,6 +182,13 @@ class CameraService {
   /// Initialise la caméra et les capteurs
   Future<void> initialize() async {
     try {
+      // Nettoyage de sécurité en cas de rechargement/re-initialisation
+      // Empêche la fuite de mémoire native et l'erreur de MessageQueue (Dead thread)
+      if (_controller != null) {
+        await _controller?.dispose();
+        _controller = null;
+      }
+
       _cameras = await availableCameras();
       if (_cameras == null || _cameras!.isEmpty) {
         throw Exception('Aucune caméra disponible');
@@ -222,7 +229,9 @@ class CameraService {
         // Ignorer si échec (reste en normal)
       }
 
-      await _lockExposureAndFocus();
+      // PAS DE VERROUILLAGE D'EXPOSITION NI DE FOCUS (on supprime _lockExposureAndFocus)
+      // OpenCV Panorama a BESOIN que chaque image soit nette et correctement exposée.
+      // Si on verrouille l'exposition sur le ciel, la terre sera noire (et vice versa).
       _isReady = true;
     } catch (e) {
       throw Exception('Erreur d\'initialisation de la caméra: $e');
@@ -545,17 +554,6 @@ class CameraService {
   //  CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
 
-  /// Verrouille l'exposition et le focus
-  Future<void> _lockExposureAndFocus() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    try {
-      await _controller!.setExposureMode(ExposureMode.locked);
-      await _controller!.setFocusMode(FocusMode.locked);
-    } catch (_) {
-      // Certains appareils ne supportent pas le verrouillage
-    }
-  }
-
   /// Capture une photo au point courant (avec retry pour les erreurs Android)
   Future<CapturedPhoto> capturePhoto() async {
     // ── Guards ──
@@ -627,8 +625,10 @@ class CameraService {
       _nearTargetFrames = 0;
       _confirmedNear = false;
 
-      // Délai minimum pour laisser le temps au pipeline caméra
-      await Future.delayed(const Duration(milliseconds: 150));
+      // Délai prolongé pour laisser le temps à l'autofocus et l'exposition
+      // de s'ajuster avec la toute nouvelle vue pour que la luminosité
+      // des photos soit identique (fondamental pour la création de la sphère OpenCV)
+      await Future.delayed(const Duration(milliseconds: 300));
 
       return photo;
     } catch (e) {

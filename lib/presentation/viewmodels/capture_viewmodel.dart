@@ -243,6 +243,13 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
           allTargetPoints: targetPoints,
         );
 
+        // STABILITÉ ANDROID : Pauser ou libérer la caméra avant le traitement lourd
+        // Cela empêche le bug "MessageQueue on a dead thread" où le plugin
+        // caméra panique parce que l'Isolate de stitching bloque ou surcharge le CPU.
+        try {
+          await _cameraService.controller?.pausePreview();
+        } catch (_) {}
+
         await _performStitching(updatedPhotos);
       } else {
         // Passer à la cible suivante
@@ -327,18 +334,20 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
 }
 
 /// Provider du CameraService
-final cameraServiceProvider = Provider<CameraService>((ref) {
+final cameraServiceProvider = Provider.autoDispose<CameraService>((ref) {
   return CameraService();
 });
 
 /// Provider du StitchingService
-final stitchingServiceProvider = Provider<StitchingService>((ref) {
-  return StitchingService();
+final stitchingServiceProvider = Provider.autoDispose<StitchingService>((ref) {
+  return StitchingService(); // Service sans état, mais on l'autodispose pour cohérence
 });
 
 /// Provider du CaptureViewModel
 final captureViewModelProvider =
-    StateNotifierProvider<CaptureViewModel, CaptureViewState>((ref) {
+    StateNotifierProvider.autoDispose<CaptureViewModel, CaptureViewState>((
+      ref,
+    ) {
       final cameraService = ref.watch(cameraServiceProvider);
       final stitchingService = ref.watch(stitchingServiceProvider);
       return CaptureViewModel(

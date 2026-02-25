@@ -18,14 +18,15 @@ class AppConstants {
   ];
 
   /// Nombre de photos par rangée
-  /// Réduit pour une expérience plus rapide tout en gardant une bonne couverture
-  /// Le FOV large de la caméra compense le nombre réduit de photos
+  /// Augmenté considérablement pour assurer un énorme chevauchement (Overlap > 40%)
+  /// C'est indispensable pour que le mode PANORAMA d'OpenCV réussisse
+  /// l'ajustement des paramètres (évite ERR_CAMERA_PARAMS_ADJUST_FAIL).
   static const List<int> photosPerRow = [
-    3, // Zénith (75°) - petit cercle, 3 suffit
-    6, // Haute (35°)
-    8, // Horizon (0°) - cercle complet
-    6, // Basse (-35°)
-    3, // Nadir (-75°) - petit cercle
+    5, // Zénith (75°)
+    10, // Haute (35°)
+    12, // Horizon (0°)
+    10, // Basse (-35°)
+    5, // Nadir (-75°)
   ];
 
   /// Nombre total de photos
@@ -33,11 +34,11 @@ class AppConstants {
       photosPerRow.fold(0, (sum, count) => sum + count);
 
   /// Tolérance angulaire pour valider la position (en degrés)
-  /// Réduction (18°) pour éviter le décalage perçu et garantir la précision
-  static const double angleTolerance = 18.0;
+  /// Réduction pour garantir un alignement presque millimétrique
+  static const double angleTolerance = 12.0;
 
   /// Tolérance d'élévation pour valider la rangée (en degrés)
-  static const double elevationTolerance = 18.0;
+  static const double elevationTolerance = 12.0;
 
   // ── Image processing ──
   static const int maxImageWidth = 1920;

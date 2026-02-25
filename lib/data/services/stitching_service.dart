@@ -163,18 +163,22 @@ class StitchingService {
       sendPort.send(const StitchingResult(success: false, progress: 0.25));
 
       // 2. Initialiser le Stitcher OpenCV
-      // On utilise le mode SCANS au lieu de PANORAMA, cela désactive l'ajustement sévère
-      // de la caméra (focale, etc) qui plante souvent (ERR_CAMERA_PARAMS_ADJUST_FAIL)
-      // pour des photos imparfaites prises à la main.
-      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.SCANS);
+      // Mode PANORAMA (Projection sphérique 360°)
+      // Les paramètres "registrationResol" et "panoConfidenceThresh" ci-dessous
+      // empêchent l'erreur ERR_CAMERA_PARAMS_ADJUST_FAIL même en mode PANORAMA.
+      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.PANORAMA);
 
       // Ajustements essentiels pour la stabilité sur mobile (mémoire)
       stitcher.compositingResol =
           0.6; // <- Réduit la taille pour éviter OOM et accélérer le rendu
+
+      // Paramètres CRUCIAUX pour empêcher l'ajusteur de caméra de planter (ERR_CAMERA_PARAMS_ADJUST_FAIL)
       stitcher.panoConfidenceThresh =
-          0.3; // Tolérance pour matcher des zones plus difficiles (0.3 au lieu de 1.0 par défaut)
+          0.1; // (défaut 1.0) On force OpenCV à accepter les paires d'images même si la corrélation est très faible
       stitcher.registrationResol =
-          0.3; // Aide considérablement l'ajustement de la caméra (empêche ERR_CAMERA_PARAMS_ADJUST_FAIL) en redimensionnant l'image pendant l'alignement.
+          0.3; // Baisse la résolution pour accélérer l'alignement et masquer le bruit
+      stitcher.waveCorrection =
+          false; // Désactiver la correction d'onde horizontale évite aux paramètres de caméra de paniquer
 
       sendPort.send(const StitchingResult(success: false, progress: 0.30));
 
