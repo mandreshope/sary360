@@ -51,23 +51,11 @@ dependencies:
   # 360 viewer (forked locally)
   flutter_cube: ^0.1.1
   sensors_plus: ^7.0.0
-  opencv_dart: ^2.2.1+3
   go_router: ^18.0.2
   google_fonts: ^9.0.0
   shared_preferences: ^2.5.5
+  ffi: ^2.2.0
 
-hooks:
-  user_defines:
-    dartcv4:
-      include_modules:
-        - imgproc
-        - imgcodecs
-        - stitching
-      exclude_modules:
-        - videoio
-        - video
-        - highgui
-        - dnn
   
   # UI utilities
 
@@ -81,6 +69,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  ffigen: ^22.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

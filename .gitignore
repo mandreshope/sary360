@@ -46,3 +46,5 @@ app.*.map.json
 
 # FVM Version Cache
 .fvm/
+# OpenCV Android SDK (téléchargé localement, voir README)
+/third_party/

@@ -12,11 +12,19 @@ class AppConstants {
       wideAngle ? CaptureGrid.wide : CaptureGrid.standard;
 
   /// Champ de vision d'une photo ultra grand angle en portrait (degrés).
-  /// Mesuré sur Pixel 6a : objectif 2,35 mm, capteur 5,04 × 3,77 mm
-  /// (≈ 94° × 77,5° en 4:3). Le plugin camera ne capture qu'en 16:9, ce qui
-  /// recadre le petit côté à ≈ 62°.
-  static const double wideHFov = 62.0;
-  static const double wideVFov = 94.0;
+  /// Pixel 6a : calibration intrinsèque 1888,6 px sur 4032 px (≈ 94° × 62°
+  /// en 16:9), mais la correction de distorsion de l'appareil recadre
+  /// l'image d'environ 20 % : les focales mesurées par l'assemblage donnent
+  /// ≈ 53° × 83° (photo 1080 × 1920). L'assemblage affine de toute façon la
+  /// focale à partir des points-clés.
+  static const double wideHFov = 53.0;
+  static const double wideVFov = 83.0;
+
+  /// Champ de vision de l'objectif principal en portrait 16:9 (degrés).
+  /// Pixel 6a : objectif 4,38 mm, capteur 5,64 × 4,23 mm (≈ 65,6° × 51,6°
+  /// en 4:3), petit côté recadré à ≈ 40° en 16:9.
+  static const double mainHFov = 40.0;
+  static const double mainVFov = 65.6;
 
   /// Tolérance angulaire pour valider la position (en degrés)
   /// Réduction pour garantir un alignement presque millimétrique
@@ -87,14 +95,15 @@ class CaptureGrid {
     photosPerRow: [5, 10, 12, 10, 5],
   );
 
-  /// Ultra grand angle (portrait 16:9 ≈ 62° × 94°) : 23 photos.
-  /// - Horizon : 9 photos espacées de 40° → ≈ 36 % de chevauchement.
-  /// - ±45° : 6 photos espacées de 60°, chaque photo couvrant ≈ 88°
-  ///   d'azimut à cette élévation → ≈ 32 % ; leurs 94° de hauteur montent
-  ///   jusqu'à ≈ 92°, d'où une seule photo suffisante à chaque pôle.
-  /// - Pôles à ±85° : au-delà de 80°, le guidage ignore l'azimut.
+  /// Ultra grand angle (portrait 16:9 ≈ 53° × 83°) : 26 photos.
+  /// - Horizon : 10 photos espacées de 36° → ≈ 32 % de chevauchement.
+  /// - ±45° : 7 photos espacées de 51°, chaque photo couvrant ≈ 75°
+  ///   d'azimut à cette élévation → ≈ 32 % ; leurs 83° de hauteur montent
+  ///   jusqu'à ≈ 86°.
+  /// - Pôles à ±85° : une photo chacun (au-delà de 80°, le guidage ignore
+  ///   l'azimut).
   static const wide = CaptureGrid(
     rowElevations: [85.0, 45.0, 0.0, -45.0, -85.0],
-    photosPerRow: [1, 6, 9, 6, 1],
+    photosPerRow: [1, 7, 10, 7, 1],
   );
 }

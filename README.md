@@ -40,32 +40,58 @@ Sary360 guide l'utilisateur lors de la capture de photos multiples grâce au **g
 
 ### Prérequis
 
-- Flutter SDK 3.10+
-- Dart SDK 3.10+
-- Android Studio / VS Code
-- Device Android 6.0+ (API 23+) ou émulateur
+- Flutter 3.47.5 (version fixée par `.fvmrc`, utilisable avec [FVM](https://fvm.app))
+- Android SDK avec **NDK 28** et **CMake 3.22.1** (Android Studio → SDK Manager → SDK Tools)
+- **OpenCV Android SDK 4.13.0** (module C++ d'assemblage, ~320 Mo à télécharger une fois)
+- Appareil Android 8.0+ (API 26+)
 
 ### Étapes
 
-1. **Cloner le repository**
+1. **Cloner le dépôt et installer les dépendances**
    ```bash
-   git clone https://github.com/votre-username/sary360.git
+   git clone https://github.com/mandreshope/sary360.git
    cd sary360
-   ```
-
-2. **Installer les dépendances**
-   ```bash
    flutter pub get
    ```
 
+2. **Installer l'OpenCV Android SDK** dans `third_party/` (ignoré par git)
+   ```bash
+   mkdir -p third_party && cd third_party
+   curl -L -C - -o opencv-android-sdk.zip \
+     https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip
+   unzip -q opencv-android-sdk.zip && rm opencv-android-sdk.zip
+   cd ..
+   ```
+   Le SDK peut aussi être placé ailleurs : indiquer son chemin dans
+   `android/local.properties` (`opencv.dir=/chemin/vers/OpenCV-android-sdk`) ou
+   dans la variable d'environnement `OPENCV_ANDROID_SDK`.
+
 3. **Lancer l'application**
    ```bash
-   # Mode debug
-   flutter run
-
-   # Mode release (recommandé pour tester les performances)
-   flutter run --release
+   flutter run            # debug
+   flutter run --release  # performances réelles de l'assemblage
    ```
+   Gradle compile le module natif (`native/stitcher`) avec CMake pour
+   arm64-v8a, armeabi-v7a et x86_64, en liant OpenCV en statique.
+
+### Module natif d'assemblage
+
+| Élément | Emplacement |
+|---------|-------------|
+| Interface C (FFI) | `native/stitcher/include/sary_stitcher.h` |
+| Pipeline OpenCV (`cv::detail`) | `native/stitcher/src/sary_stitcher.cpp` |
+| Build CMake | `native/stitcher/CMakeLists.txt` (appelé par `android/app/build.gradle.kts`) |
+| Bindings Dart générés | `lib/data/native/sary_stitcher_bindings.g.dart` |
+
+Après une modification de l'en-tête C, régénérer les bindings (libclang requis,
+fourni par Xcode sur macOS) :
+```bash
+dart run ffigen --config ffigen.yaml
+```
+
+Pour tester le pipeline hors de l'app sur un appareil branché, un outil en ligne
+de commande est disponible (`native/stitcher/tools/stitch_cli.cpp`, option CMake
+`-DSARY_BUILD_CLI=ON`).
 
 ---
 
@@ -100,17 +126,21 @@ L'utilisateur capture **6 photos** en tournant à 360° :
 - Le bouton de capture s'active uniquement quand l'angle est correct (±10°)
 - L'exposition et le focus sont verrouillés pour cohérence
 
-### 2. Stitching Offline
+### 2. Assemblage (module C++ OpenCV)
 
-Le traitement se fait localement en **5 étapes** :
+Le traitement se fait sur le téléphone, dans un isolate dédié, avec progression
+et annulation :
 
-1. **Resize** → Optimisation pour performance (1920x1080 max)
-2. **Crop** → Garde 85% du centre (minimise distorsion)
-3. **Concatenation** → Assemblage horizontal avec chevauchement (100px)
-4. **Blending** → Fusion douce dans les zones de chevauchement
-5. **Balance** → Ajustements couleurs globaux
-
-Le tout dans un **isolate séparé** pour ne pas bloquer l'UI.
+1. **Points de départ** : rotation de chaque photo mesurée par les capteurs au
+   déclenchement (quaternion), focale déduite de l'angle de vue.
+2. **Points-clés ORB** et mise en correspondance des **seules photos voisines**.
+3. **Bundle adjustment** (`BundleAdjusterRay`) par groupe de photos reliées,
+   conservé seulement s'il réduit l'écart entre les rayons des points appariés ;
+   sinon, rotations des capteurs.
+4. **Projection sphérique**, compensation d'exposition (`BlocksGainCompensator`),
+   raccords (`GraphCutSeamFinder`), fusion multibande.
+5. **Image équirectangulaire 2:1** (4096 × 2048), zones non couvertes remplies
+   par un dégradé flou, métadonnées XMP Photo Sphere.
 
 ### 3. Visualisation 360°
 

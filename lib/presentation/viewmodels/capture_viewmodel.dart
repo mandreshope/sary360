@@ -298,13 +298,24 @@ class CaptureViewModel extends StateNotifier<CaptureViewState> {
         completedPanorama: panorama,
         stitchingProgress: 1.0,
       );
-    } catch (e) {
+    } on StitchingCancelledException {
+      if (!mounted) return;
       state = state.copyWith(
         state: CaptureState.error,
-        errorMessage: 'Erreur d\'assemblage: $e',
+        errorMessage: 'Assemblage annulé.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      state = state.copyWith(
+        state: CaptureState.error,
+        errorMessage: 'Erreur d\'assemblage : $e',
       );
     }
   }
+
+  /// Demande l'arrêt de l'assemblage en cours (pris en compte entre deux
+  /// étapes du traitement natif).
+  void cancelStitching() => _stitchingService.cancel();
 
   /// Réinitialise la capture
   void reset() {

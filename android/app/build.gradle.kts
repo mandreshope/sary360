@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Emplacement de l'OpenCV Android SDK (module natif d'assemblage) :
+// clé opencv.dir de local.properties, sinon variable OPENCV_ANDROID_SDK,
+// sinon third_party/OpenCV-android-sdk à la racine du projet.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val opencvSdkDir: String = localProperties.getProperty("opencv.dir")
+    ?: System.getenv("OPENCV_ANDROID_SDK")
+    ?: rootProject.file("../third_party/OpenCV-android-sdk").absolutePath
 
 android {
     namespace = "com.mandreshope.sary360"
@@ -23,6 +36,29 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DOpenCV_DIR=$opencvSdkDir/sdk/native/jni",
+                    // Les bibliothèques statiques du SDK sont compilées
+                    // avec la libc++ partagée.
+                    "-DANDROID_STL=c++_shared",
+                )
+            }
+        }
+    }
+
+    // Module C++ d'assemblage (OpenCV, appelé depuis Dart via FFI).
+    externalNativeBuild {
+        cmake {
+            path = file("../../native/stitcher/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // Extrait les .so sur le disque à l'installation : OpenCV liste le dossier

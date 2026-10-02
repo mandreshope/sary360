@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/math/camera_rotation.dart';
+import '../../core/math/quaternion.dart';
 import '../../domain/models/captured_photo.dart';
 
 /// Position cible pour une capture
@@ -230,7 +232,7 @@ class CameraService {
         // Ignorer si échec (reste en normal)
       }
 
-      // Les cibles dépendent de l'objectif : 23 en ultra grand angle,
+      // Les cibles dépendent de l'objectif : 26 en ultra grand angle,
       // 42 avec l'objectif principal.
       _generateTargets();
 
@@ -511,6 +513,34 @@ class CameraService {
     }
   }
 
+  /// Orientation appareil → monde (ENU) d'un téléphone tenu en portrait,
+  /// sans roulis, visant exactement [target]. L'azimut des cibles est
+  /// relatif au cap de départ : l'assemblage recentre de toute façon le
+  /// panorama sur la première photo.
+  Quaternion _targetOrientation(CaptureTarget target) {
+    final az = target.azimuth * math.pi / 180;
+    final el = target.elevation * math.pi / 180;
+    // Axe de visée et axe « droite » horizontal, en ENU.
+    final f = [
+      math.sin(az) * math.cos(el),
+      math.cos(az) * math.cos(el),
+      math.sin(el),
+    ];
+    final r = [math.cos(az), -math.sin(az), 0.0];
+    // Haut de l'écran = droite × visée ; l'écran regarde vers −visée.
+    final u = [
+      r[1] * f[2] - r[2] * f[1],
+      r[2] * f[0] - r[0] * f[2],
+      r[0] * f[1] - r[1] * f[0],
+    ];
+    // Colonnes : axes x, y, z de l'appareil exprimés en ENU.
+    return Quaternion.fromRotationMatrix([
+      r[0], u[0], -f[0], //
+      r[1], u[1], -f[1], //
+      r[2], u[2], -f[2],
+    ]);
+  }
+
   /// Vérifie si l'orientation actuelle est proche de la cible
   bool _isNearTarget(CaptureTarget target) {
     // Différence d'azimut avec gestion du wrap-around
@@ -588,6 +618,14 @@ class CameraService {
 
     _isTakingPicture = true;
     try {
+      // Orientation mesurée au déclenchement (moyenne glissante gravité +
+      // champ magnétique), avant l'attente de l'obturateur. Elle sert de
+      // point de départ à l'assemblage. Repli sur l'orientation de la cible
+      // si les mesures sont dégénérées.
+      final orientation =
+          CameraRotation.deviceToWorldFromSensors(_gravity, _magnetic) ??
+          _targetOrientation(currentTarget!);
+
       final XFile image = await _takePictureWithRetry();
 
       final tempDir = await getTemporaryDirectory();
@@ -613,8 +651,9 @@ class CameraService {
         rowIndex: target.rowIndex,
         indexInRow: target.indexInRow,
         // FOV portrait ultra grand angle, recadré en 16:9 par le plugin
-        hFov: isWide ? AppConstants.wideHFov : null,
-        vFov: isWide ? AppConstants.wideVFov : null,
+        hFov: isWide ? AppConstants.wideHFov : AppConstants.mainHFov,
+        vFov: isWide ? AppConstants.wideVFov : AppConstants.mainVFov,
+        orientation: orientation,
       );
 
       // Marquer cette cible comme capturée

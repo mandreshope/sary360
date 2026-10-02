@@ -1,70 +1,111 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
+
+import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../../core/constants/app_constants.dart';
+import '../../core/math/camera_rotation.dart';
 import '../../domain/models/captured_photo.dart';
 import '../../domain/models/panorama.dart';
+import '../native/sary_stitcher_bindings.g.dart';
 
-/// Paramètres pour l'isolate de stitching sphérique
-class StitchingParams {
-  final List<PhotoData> photos;
-  final String outputPath;
-  final SendPort sendPort;
+/// Levée quand l'assemblage a été annulé par l'utilisateur.
+class StitchingCancelledException implements Exception {
+  const StitchingCancelledException();
 
-  const StitchingParams({
-    required this.photos,
+  @override
+  String toString() => 'Assemblage annulé';
+}
+
+/// Échec de l'assemblage natif, avec un message destiné à l'utilisateur.
+class StitchingException implements Exception {
+  const StitchingException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Requête envoyée à l'isolate d'assemblage (types simples uniquement).
+class _NativeRequest {
+  const _NativeRequest({
+    required this.paths,
+    required this.rotations,
+    required this.hFov,
+    required this.neighborAngle,
+    required this.outputWidth,
     required this.outputPath,
-    required this.sendPort,
+    required this.progressAddress,
+    required this.cancelAddress,
   });
+
+  final List<String> paths;
+
+  /// Rotations caméra → monde OpenCV, 9 réels par photo.
+  final List<double> rotations;
+  final double hFov;
+  final double neighborAngle;
+  final int outputWidth;
+  final String outputPath;
+
+  /// Adresses des cellules partagées allouées par l'isolate principal.
+  final int progressAddress;
+  final int cancelAddress;
 }
 
-/// Données sérialisables d'une photo (pour l'isolate)
-class PhotoData {
-  final String path;
-  final double azimuth;
-  final double elevation;
-  final double? hFov;
-  final double? vFov;
-
-  const PhotoData({
-    required this.path,
-    required this.azimuth,
-    required this.elevation,
-    this.hFov,
-    this.vFov,
+/// Compte rendu renvoyé par l'isolate.
+class _NativeResponse {
+  const _NativeResponse({
+    required this.status,
+    required this.message,
+    required this.refined,
+    required this.matchedPairs,
+    required this.medianCorrection,
+    required this.elapsedMs,
   });
+
+  final int status;
+  final String message;
+  final bool refined;
+  final int matchedPairs;
+  final double medianCorrection;
+  final int elapsedMs;
 }
 
-/// Résultat du stitching
-class StitchingResult {
-  final bool success;
-  final String? panoramaPath;
-  final String? error;
-  final double progress;
-
-  const StitchingResult({
-    required this.success,
-    this.panoramaPath,
-    this.error,
-    this.progress = 0.0,
-  });
-}
-
-/// Service de stitching sphérique avec OpenCV
+/// Assemblage des photos en sphère équirectangulaire via le module C++
+/// (native/stitcher), exécuté dans un isolate dédié.
+///
+/// La progression et l'annulation passent par deux cellules de mémoire
+/// native partagées : le module écrit la progression, l'isolate principal
+/// la lit périodiquement et peut lever le drapeau d'annulation.
 class StitchingService {
-  /// Assemble les photos en panorama sphérique 360°
+  ffi.Pointer<ffi.Int32>? _cancelFlag;
+
+  /// Demande l'arrêt de l'assemblage en cours (sans effet sinon).
+  void cancel() {
+    final flag = _cancelFlag;
+    if (flag != null) flag.value = 1;
+  }
+
+  /// Assemble les photos en panorama sphérique 360°.
   Future<Panorama> stitchPanorama(
     List<CapturedPhoto> photos, {
-    Function(double)? onProgress,
+    void Function(double progress)? onProgress,
+    int outputWidth = AppConstants.equirectWidth,
   }) async {
     if (photos.isEmpty) {
-      throw Exception('Aucune photo à assembler');
+      throw const StitchingException('Aucune photo à assembler');
     }
-
-    final receivePort = ReceivePort();
+    if (_cancelFlag != null) {
+      throw const StitchingException('Un assemblage est déjà en cours');
+    }
 
     final appDir = await getApplicationDocumentsDirectory();
     final panoramaDir = Directory(
@@ -73,267 +114,179 @@ class StitchingService {
     if (!panoramaDir.existsSync()) {
       panoramaDir.createSync(recursive: true);
     }
-
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final outputPath = '${panoramaDir.path}/panorama_$timestamp.jpg';
 
-    // Convertir en données sérialisables pour l'isolate
-    final photoDataList = photos
-        .map(
-          (p) => PhotoData(
-            path: p.path,
-            azimuth: p.azimuth,
-            elevation: p.elevation,
-            hFov: p.hFov,
-            vFov: p.vFov,
-          ),
-        )
-        .toList();
+    // Rotations des capteurs, recentrées pour que la première photo soit
+    // au centre du panorama.
+    final rotations = CameraRotation.recenterYaw([
+      for (final p in photos) CameraRotation.openCvCameraToWorld(p.orientation),
+    ]);
 
-    // onError / onExit : si l'isolate meurt sans envoyer de résultat
-    // (erreur non interceptée, arrêt brutal), l'interface reçoit un message
-    // au lieu de rester bloquée indéfiniment sur la dernière progression.
-    await Isolate.spawn(
-      _stitchInIsolate,
-      StitchingParams(
-        photos: photoDataList,
-        outputPath: outputPath,
-        sendPort: receivePort.sendPort,
-      ),
-      onError: receivePort.sendPort,
-      onExit: receivePort.sendPort,
-    );
+    // Toutes les photos d'une capture partagent le même objectif.
+    final hFov = photos.first.hFov ?? AppConstants.mainHFov;
+    final vFov = photos.first.vFov ?? AppConstants.mainVFov;
 
-    StitchingResult? finalResult;
-    await for (final message in receivePort) {
-      if (message is StitchingResult) {
-        onProgress?.call(message.progress);
-        if (message.success || message.error != null) {
-          finalResult = message;
-          break;
-        }
-      } else if (message is List) {
-        // Erreur non interceptée : [description, pile d'appels].
-        finalResult = StitchingResult(
-          success: false,
-          error: 'Erreur dans l\'assemblage : ${message.first}',
-        );
-        break;
-      } else if (message == null) {
-        // onExit : l'isolate s'est terminé sans résultat final.
-        finalResult = const StitchingResult(
-          success: false,
-          error: 'L\'assemblage s\'est arrêté de façon inattendue',
-        );
-        break;
+    final progress = calloc<ffi.Float>();
+    final cancelFlag = calloc<ffi.Int32>();
+    _cancelFlag = cancelFlag;
+
+    // Lecture périodique de la progression écrite par le module natif.
+    var lastProgress = -1.0;
+    final poll = Timer.periodic(const Duration(milliseconds: 120), (_) {
+      final v = progress.value;
+      if (v != lastProgress) {
+        lastProgress = v;
+        onProgress?.call(v);
       }
-    }
-    receivePort.close();
+    });
 
-    if (finalResult == null || !finalResult.success) {
-      throw Exception(
-        finalResult?.error ?? 'Erreur inconnue lors du stitching',
+    try {
+      final request = _NativeRequest(
+        paths: [for (final p in photos) p.path],
+        rotations: [for (final r in rotations) ...r],
+        hFov: hFov,
+        // Au-delà, deux photos ne se chevauchent plus : inutile de les
+        // comparer.
+        neighborAngle: math.max(hFov, vFov) - 5,
+        outputWidth: outputWidth,
+        outputPath: outputPath,
+        progressAddress: progress.address,
+        cancelAddress: cancelFlag.address,
       );
+      final response = await _runInIsolate(request);
+
+      debugPrint(
+        '[stitch] statut ${response.status} en ${response.elapsedMs} ms, '
+        '${response.matchedPairs} paires, '
+        '${response.refined ? 'rotations affinées (correction médiane '
+                  '${response.medianCorrection.toStringAsFixed(1)}°)' : 'rotations des capteurs'}'
+        ' — ${response.message}',
+      );
+
+      switch (response.status) {
+        case SARY_OK:
+          break;
+        case SARY_ERR_CANCELLED:
+          throw const StitchingCancelledException();
+        case SARY_ERR_OUT_OF_MEMORY:
+          throw StitchingException(
+            'Mémoire insuffisante pour assembler la sphère'
+            '${outputWidth > AppConstants.equirectWidth ? ' : essayez la définition standard' : ''}.',
+          );
+        case SARY_ERR_IMAGE_READ:
+          throw StitchingException('Photo illisible : ${response.message}');
+        default:
+          throw StitchingException(
+            'Échec de l\'assemblage : ${response.message}',
+          );
+      }
+      onProgress?.call(1.0);
+    } finally {
+      poll.cancel();
+      _cancelFlag = null;
+      calloc.free(progress);
+      calloc.free(cancelFlag);
     }
 
     return Panorama(
       id: timestamp.toString(),
       name: 'Panorama ${DateTime.now().toString().split('.')[0]}',
       createdAt: DateTime.now(),
-      stitchedImagePath: finalResult.panoramaPath!,
+      stitchedImagePath: outputPath,
       originalPhotoPaths: photos.map((p) => p.path).toList(),
       photoCount: photos.length,
     );
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  ISOLATE - Tout le traitement lourd se fait ici avec OpenCV
+  //  ISOLATE : appel bloquant au module natif
   // ═══════════════════════════════════════════════════════════════════
 
-  static Future<void> _stitchInIsolate(StitchingParams params) async {
-    try {
-      final photos = params.photos;
-      final outputPath = params.outputPath;
-      final sendPort = params.sendPort;
+  /// Lance l'assemblage dans un isolate. La closure est créée ici, dans une
+  /// méthode statique, pour ne capturer que [request] : créée dans
+  /// stitchPanorama, elle embarquerait tout son contexte (callback de
+  /// progression → ViewModel → CameraController), qu'un isolate ne peut pas
+  /// recevoir.
+  static Future<_NativeResponse> _runInIsolate(_NativeRequest request) =>
+      Isolate.run(() => _stitchInIsolate(request));
 
-      // Désactiver OpenCL pour éviter les plantages (glob_rec error) liés à la
-      // recherche des pilotes GPU cachés empêchés par les Sandbox Android
-      cv.setUseOpenCL(false);
-
-      // 1. Lire et redimensionner toutes les images pour OpenCV
-      // C'est vital avec 42 photos : si on laisse la résolution totale (4000x3000),
-      // la recherche des millions de points-clés prendra des heures sur mobile.
-      final cvImages = cv.VecMat();
-      for (int i = 0; i < photos.length; i++) {
-        sendPort.send(
-          StitchingResult(success: false, progress: (i / photos.length) * 0.20),
-        );
-        final matRaw = cv.imread(photos[i].path, flags: cv.IMREAD_COLOR);
-        if (matRaw.isEmpty) {
-          sendPort.send(
-            StitchingResult(
-              success: false,
-              error: 'Impossible de décoder l\'image ${i + 1}',
-            ),
-          );
-          return;
-        }
-
-        // REDIMENSIONNEMENT AGRESSIF POUR LA VITESSE
-        final double maxDim = 800.0;
-        double scale = 1.0;
-        if (matRaw.cols > matRaw.rows && matRaw.cols > maxDim) {
-          scale = maxDim / matRaw.cols;
-        } else if (matRaw.rows > maxDim) {
-          scale = maxDim / matRaw.rows;
-        }
-
-        final int newW = (matRaw.cols * scale).toInt();
-        final int newH = (matRaw.rows * scale).toInt();
-
-        final matResized = cv.resize(matRaw, (
-          newW,
-          newH,
-        ), interpolation: cv.INTER_AREA);
-        matRaw.dispose(); // Libère la RAM de l'image géante immédiatement
-
-        // Les photos sans texture (mur blanc, plafond, sol uni) ne donnent
-        // presque aucun point-clé ORB : la mise en correspondance (knn = 2)
-        // échoue alors sur l'assertion FLANN « knn <= index_->size() ».
-        // Elles n'apportent rien à l'alignement, on les écarte.
-        if (!_hasEnoughTexture(matResized)) {
-          debugPrint('[stitch] photo ${i + 1} écartée : pas assez de texture');
-          matResized.dispose();
-          continue;
-        }
-
-        cvImages.add(matResized);
-      }
-
-      if (cvImages.length < 2) {
-        cvImages.dispose();
-        sendPort.send(
-          const StitchingResult(
-            success: false,
-            error:
-                'Pas assez de photos exploitables : visez des zones avec des '
-                'détails (objets, motifs) plutôt que des surfaces unies.',
-          ),
-        );
-        return;
-      }
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.25));
-
-      // 2. Initialiser le Stitcher OpenCV
-      // Mode PANORAMA (Projection sphérique 360°)
-      // Les paramètres "registrationResol" et "panoConfidenceThresh" ci-dessous
-      // empêchent l'erreur ERR_CAMERA_PARAMS_ADJUST_FAIL même en mode PANORAMA.
-      final stitcher = cv.Stitcher.create(mode: cv.StitcherMode.PANORAMA);
-
-      // Ajustements essentiels pour la stabilité sur mobile (mémoire)
-      stitcher.compositingResol =
-          1.0; // Les images ont déjà été redimensionnées manuellement, on garde la taille !
-
-      // Paramètres CRUCIAUX pour empêcher l'ajusteur de caméra de planter (ERR_CAMERA_PARAMS_ADJUST_FAIL)
-      stitcher.panoConfidenceThresh =
-          0.1; // (défaut 1.0) On force OpenCV à accepter les paires d'images même si la corrélation est très faible
-      stitcher.registrationResol =
-          1.0; // Les images ont déjà été réduites, 1.0 permet trouver des points clés précis sur l'image compressée
-      stitcher.waveCorrection =
-          false; // Désactiver la correction d'onde horizontale évite aux paramètres de caméra de paniquer
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.30));
-
-      // 3. Effectuer le stitching, en deux temps pour suivre la progression :
-      //    - estimateTransform : points-clés, mise en correspondance de toutes
-      //      les paires, bundle adjustment (le plus long avec ~40 photos) ;
-      //    - composePanorama : projection, raccords, exposition, fusion.
-      // Les durées sont journalisées (logcat, tag « flutter ») pour
-      // identifier l'étape qui bloque.
-      final watch = Stopwatch()..start();
-      debugPrint(
-        '[stitch] ${cvImages.length} images, estimation des caméras...',
-      );
-      sendPort.send(const StitchingResult(success: false, progress: 0.40));
-
-      var status = stitcher.estimateTransform(cvImages);
-      debugPrint(
-        '[stitch] estimateTransform: ${status.name} '
-        'en ${watch.elapsed.inSeconds} s',
-      );
-      sendPort.send(const StitchingResult(success: false, progress: 0.70));
-
-      var pano = cv.Mat.empty();
-      if (status == cv.StitcherStatus.OK) {
-        watch.reset();
-        pano.dispose();
-        (status, pano) = stitcher.composePanorama(images: cvImages);
-        debugPrint(
-          '[stitch] composePanorama: ${status.name} '
-          'en ${watch.elapsed.inSeconds} s (${pano.cols}x${pano.rows})',
-        );
-      }
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.85));
-
-      if (status != cv.StitcherStatus.OK) {
-        // Nettoyage rapide avant Exception
-        pano.dispose();
-        for (int i = 0; i < cvImages.length; i++) {
-          cvImages[i].dispose();
-        }
-        cvImages.dispose();
-        stitcher.dispose();
-
-        throw Exception(
-          "Erreur de stitching OpenCV (Status: ${status.name}).\n"
-          "Assurez-vous que les images se chevauchent suffisamment et ont des détails distincts.",
-        );
-      }
-
-      // 4. Sauvegarder
-      cv.imwrite(outputPath, pano);
-
-      sendPort.send(const StitchingResult(success: false, progress: 0.95));
-
-      // 5. Injecter les métadonnées XMP (Photo Sphere)
-      final bytes = await File(outputPath).readAsBytes();
-      final jpegWithXmp = _injectXmpMetadata(bytes, pano.cols, pano.rows);
-      await File(outputPath).writeAsBytes(jpegWithXmp);
-
-      // 6. Libération de la mémoire OpenCV (très important en Dart FFI)
-      pano.dispose();
-      for (int i = 0; i < cvImages.length; i++) {
-        cvImages[i].dispose();
-      }
-      cvImages.dispose();
-      stitcher.dispose();
-
-      sendPort.send(
-        StitchingResult(success: true, panoramaPath: outputPath, progress: 1.0),
-      );
-    } catch (e) {
-      params.sendPort.send(
-        StitchingResult(success: false, error: e.toString()),
-      );
+  static ffi.DynamicLibrary _openLibrary() {
+    if (Platform.isAndroid) {
+      return ffi.DynamicLibrary.open('libsary_stitcher.so');
     }
+    if (Platform.isIOS) return ffi.DynamicLibrary.process();
+    throw UnsupportedError(
+      'Assemblage natif indisponible sur cette plateforme',
+    );
   }
 
-  /// Part minimale de pixels de contour (Canny) pour qu'une photo soit
-  /// assez texturée pour la détection de points-clés.
-  static const double _minEdgeRatio = 0.003;
+  static Future<_NativeResponse> _stitchInIsolate(_NativeRequest req) async {
+    final bindings = SaryStitcherBindings(_openLibrary());
+    final n = req.paths.length;
 
-  /// Vrai si l'image contient assez de contours nets. Les seuils de Canny
-  /// portent sur l'intensité absolue du gradient : une surface unie ne
-  /// dépasse pas le seuil, quel que soit son bruit.
-  static bool _hasEnoughTexture(cv.Mat bgr) {
-    final gray = cv.cvtColor(bgr, cv.COLOR_BGR2GRAY);
-    final edges = cv.canny(gray, 50, 150);
-    final ratio = cv.countNonZero(edges) / (edges.rows * edges.cols);
-    gray.dispose();
-    edges.dispose();
-    return ratio >= _minEdgeRatio;
+    final response = using((arena) {
+      final paths = arena<ffi.Pointer<ffi.Char>>(n);
+      for (var i = 0; i < n; i++) {
+        paths[i] = req.paths[i].toNativeUtf8(allocator: arena).cast();
+      }
+      final rotations = arena<ffi.Float>(req.rotations.length);
+      for (var i = 0; i < req.rotations.length; i++) {
+        rotations[i] = req.rotations[i];
+      }
+
+      final params = SaryStitchParams.$allocate(
+        arena,
+        image_count: n,
+        image_paths: paths,
+        rotations: rotations,
+        hfov_deg: req.hFov,
+        output_width: req.outputWidth,
+        jpeg_quality: AppConstants.jpegQuality,
+        work_megapix: 0.6,
+        // Raccords GraphCut : l'étape la plus coûteuse, 0,05 Mpx suffit.
+        seam_megapix: 0.05,
+        compose_megapix: -1,
+        max_features: 3000,
+        neighbor_max_angle_deg: req.neighborAngle,
+        refine: 1,
+        output_path: req.outputPath.toNativeUtf8(allocator: arena).cast(),
+        progress: ffi.Pointer.fromAddress(req.progressAddress),
+        cancel: ffi.Pointer.fromAddress(req.cancelAddress),
+      );
+      final result = arena<SaryStitchResult>();
+
+      final status = bindings.sary_stitch(params, result);
+      final r = result.ref;
+      return _NativeResponse(
+        status: status,
+        message: _readMessage(r.message),
+        refined: r.refined == 1,
+        matchedPairs: r.matched_pairs,
+        medianCorrection: r.median_correction_deg,
+        elapsedMs: r.elapsed_ms,
+      );
+    });
+
+    if (response.status == SARY_OK) {
+      // Métadonnées Photo Sphere : l'image couvre toute la sphère.
+      final file = File(req.outputPath);
+      final bytes = await file.readAsBytes();
+      final width = req.outputWidth;
+      await file.writeAsBytes(_injectXmpMetadata(bytes, width, width ~/ 2));
+    }
+    return response;
+  }
+
+  /// Lit le message C (UTF-8 terminé par 0) d'un tableau de taille fixe.
+  static String _readMessage(ffi.Array<ffi.Char> chars) {
+    final bytes = <int>[];
+    for (var i = 0; i < 256; i++) {
+      final c = chars[i];
+      if (c == 0) break;
+      bytes.add(c & 0xFF);
+    }
+    return const Utf8Decoder(allowMalformed: true).convert(bytes);
   }
 
   Future<void> cleanTempFiles() async {
@@ -392,4 +345,4 @@ class StitchingService {
     }
     return jpeg;
   }
-} // fin StitchingService
+}

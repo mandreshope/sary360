@@ -531,6 +531,17 @@ class _CapturePageState extends ConsumerState<CapturePage> {
                 fontWeight: FontWeight.w500,
               ),
             ),
+            const SizedBox(height: 32),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  ref.read(captureViewModelProvider.notifier).cancelStitching(),
+              icon: const Icon(Icons.close_rounded),
+              label: const Text('Annuler'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+              ),
+            ),
           ],
         ),
       ),
