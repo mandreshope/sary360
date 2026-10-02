@@ -140,14 +140,16 @@ class StitchingService {
       // recherche des pilotes GPU cachés empêchés par les Sandbox Android
       cv.setUseOpenCL(false);
 
-      // 1. Lire toutes les images dans OpenCV
+      // 1. Lire et redimensionner toutes les images pour OpenCV
+      // C'est vital avec 42 photos : si on laisse la résolution totale (4000x3000),
+      // la recherche des millions de points-clés prendra des heures sur mobile.
       final cvImages = cv.VecMat();
       for (int i = 0; i < photos.length; i++) {
         sendPort.send(
           StitchingResult(success: false, progress: (i / photos.length) * 0.20),
         );
-        final mat = cv.imread(photos[i].path, flags: cv.IMREAD_COLOR);
-        if (mat.isEmpty) {
+        final matRaw = cv.imread(photos[i].path, flags: cv.IMREAD_COLOR);
+        if (matRaw.isEmpty) {
           sendPort.send(
             StitchingResult(
               success: false,
@@ -157,7 +159,25 @@ class StitchingService {
           return;
         }
 
-        cvImages.add(mat);
+        // REDIMENSIONNEMENT AGRESSIF POUR LA VITESSE
+        final double maxDim = 800.0;
+        double scale = 1.0;
+        if (matRaw.cols > matRaw.rows && matRaw.cols > maxDim) {
+          scale = maxDim / matRaw.cols;
+        } else if (matRaw.rows > maxDim) {
+          scale = maxDim / matRaw.rows;
+        }
+
+        final int newW = (matRaw.cols * scale).toInt();
+        final int newH = (matRaw.rows * scale).toInt();
+
+        final matResized = cv.resize(matRaw, (
+          newW,
+          newH,
+        ), interpolation: cv.INTER_AREA);
+        matRaw.dispose(); // Libère la RAM de l'image géante immédiatement
+
+        cvImages.add(matResized);
       }
 
       sendPort.send(const StitchingResult(success: false, progress: 0.25));
@@ -170,13 +190,13 @@ class StitchingService {
 
       // Ajustements essentiels pour la stabilité sur mobile (mémoire)
       stitcher.compositingResol =
-          0.6; // <- Réduit la taille pour éviter OOM et accélérer le rendu
+          1.0; // Les images ont déjà été redimensionnées manuellement, on garde la taille !
 
       // Paramètres CRUCIAUX pour empêcher l'ajusteur de caméra de planter (ERR_CAMERA_PARAMS_ADJUST_FAIL)
       stitcher.panoConfidenceThresh =
           0.1; // (défaut 1.0) On force OpenCV à accepter les paires d'images même si la corrélation est très faible
       stitcher.registrationResol =
-          0.3; // Baisse la résolution pour accélérer l'alignement et masquer le bruit
+          1.0; // Les images ont déjà été réduites, 1.0 permet trouver des points clés précis sur l'image compressée
       stitcher.waveCorrection =
           false; // Désactiver la correction d'onde horizontale évite aux paramètres de caméra de paniquer
 
