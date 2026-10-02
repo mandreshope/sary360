@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
@@ -89,6 +90,9 @@ class StitchingService {
         )
         .toList();
 
+    // onError / onExit : si l'isolate meurt sans envoyer de résultat
+    // (erreur non interceptée, arrêt brutal), l'interface reçoit un message
+    // au lieu de rester bloquée indéfiniment sur la dernière progression.
     await Isolate.spawn(
       _stitchInIsolate,
       StitchingParams(
@@ -96,19 +100,35 @@ class StitchingService {
         outputPath: outputPath,
         sendPort: receivePort.sendPort,
       ),
+      onError: receivePort.sendPort,
+      onExit: receivePort.sendPort,
     );
 
     StitchingResult? finalResult;
-    await for (final result in receivePort) {
-      if (result is StitchingResult) {
-        onProgress?.call(result.progress);
-        if (result.success || result.error != null) {
-          finalResult = result;
-          receivePort.close();
+    await for (final message in receivePort) {
+      if (message is StitchingResult) {
+        onProgress?.call(message.progress);
+        if (message.success || message.error != null) {
+          finalResult = message;
           break;
         }
+      } else if (message is List) {
+        // Erreur non interceptée : [description, pile d'appels].
+        finalResult = StitchingResult(
+          success: false,
+          error: 'Erreur dans l\'assemblage : ${message.first}',
+        );
+        break;
+      } else if (message == null) {
+        // onExit : l'isolate s'est terminé sans résultat final.
+        finalResult = const StitchingResult(
+          success: false,
+          error: 'L\'assemblage s\'est arrêté de façon inattendue',
+        );
+        break;
       }
     }
+    receivePort.close();
 
     if (finalResult == null || !finalResult.success) {
       throw Exception(
@@ -177,7 +197,30 @@ class StitchingService {
         ), interpolation: cv.INTER_AREA);
         matRaw.dispose(); // Libère la RAM de l'image géante immédiatement
 
+        // Les photos sans texture (mur blanc, plafond, sol uni) ne donnent
+        // presque aucun point-clé ORB : la mise en correspondance (knn = 2)
+        // échoue alors sur l'assertion FLANN « knn <= index_->size() ».
+        // Elles n'apportent rien à l'alignement, on les écarte.
+        if (!_hasEnoughTexture(matResized)) {
+          debugPrint('[stitch] photo ${i + 1} écartée : pas assez de texture');
+          matResized.dispose();
+          continue;
+        }
+
         cvImages.add(matResized);
+      }
+
+      if (cvImages.length < 2) {
+        cvImages.dispose();
+        sendPort.send(
+          const StitchingResult(
+            success: false,
+            error:
+                'Pas assez de photos exploitables : visez des zones avec des '
+                'détails (objets, motifs) plutôt que des surfaces unies.',
+          ),
+        );
+        return;
       }
 
       sendPort.send(const StitchingResult(success: false, progress: 0.25));
@@ -202,11 +245,35 @@ class StitchingService {
 
       sendPort.send(const StitchingResult(success: false, progress: 0.30));
 
-      // 3. Effectuer le stitching
-      // Attention: .stitch peut être lent, on prévient l'UI
+      // 3. Effectuer le stitching, en deux temps pour suivre la progression :
+      //    - estimateTransform : points-clés, mise en correspondance de toutes
+      //      les paires, bundle adjustment (le plus long avec ~40 photos) ;
+      //    - composePanorama : projection, raccords, exposition, fusion.
+      // Les durées sont journalisées (logcat, tag « flutter ») pour
+      // identifier l'étape qui bloque.
+      final watch = Stopwatch()..start();
+      debugPrint(
+        '[stitch] ${cvImages.length} images, estimation des caméras...',
+      );
       sendPort.send(const StitchingResult(success: false, progress: 0.40));
 
-      final (status, pano) = stitcher.stitch(cvImages);
+      var status = stitcher.estimateTransform(cvImages);
+      debugPrint(
+        '[stitch] estimateTransform: ${status.name} '
+        'en ${watch.elapsed.inSeconds} s',
+      );
+      sendPort.send(const StitchingResult(success: false, progress: 0.70));
+
+      var pano = cv.Mat.empty();
+      if (status == cv.StitcherStatus.OK) {
+        watch.reset();
+        pano.dispose();
+        (status, pano) = stitcher.composePanorama(images: cvImages);
+        debugPrint(
+          '[stitch] composePanorama: ${status.name} '
+          'en ${watch.elapsed.inSeconds} s (${pano.cols}x${pano.rows})',
+        );
+      }
 
       sendPort.send(const StitchingResult(success: false, progress: 0.85));
 
@@ -251,6 +318,22 @@ class StitchingService {
         StitchingResult(success: false, error: e.toString()),
       );
     }
+  }
+
+  /// Part minimale de pixels de contour (Canny) pour qu'une photo soit
+  /// assez texturée pour la détection de points-clés.
+  static const double _minEdgeRatio = 0.003;
+
+  /// Vrai si l'image contient assez de contours nets. Les seuils de Canny
+  /// portent sur l'intensité absolue du gradient : une surface unie ne
+  /// dépasse pas le seuil, quel que soit son bruit.
+  static bool _hasEnoughTexture(cv.Mat bgr) {
+    final gray = cv.cvtColor(bgr, cv.COLOR_BGR2GRAY);
+    final edges = cv.canny(gray, 50, 150);
+    final ratio = cv.countNonZero(edges) / (edges.rows * edges.cols);
+    gray.dispose();
+    edges.dispose();
+    return ratio >= _minEdgeRatio;
   }
 
   Future<void> cleanTempFiles() async {
