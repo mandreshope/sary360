@@ -156,9 +156,10 @@ class CameraService {
     // Horizon d'abord (le plus naturel), puis haut, zénith, bas, nadir
     final rowOrder = [2, 1, 0, 3, 4]; // index dans rowElevations
 
+    final grid = AppConstants.grid(wideAngle: _useWideAngle);
     for (final row in rowOrder) {
-      final int photosInRow = AppConstants.photosPerRow[row];
-      final double elevation = AppConstants.rowElevations[row];
+      final int photosInRow = grid.photosPerRow[row];
+      final double elevation = grid.rowElevations[row];
       final double azimuthStep = 360.0 / photosInRow;
 
       // Offset alterné entre les rangées pour un meilleur recouvrement
@@ -212,13 +213,13 @@ class CameraService {
         DeviceOrientation.portraitUp,
       ]);
 
-      _generateTargets();
       _startSensors();
 
       // Attendre que le pipeline natif Android soit complètement prêt
       await Future.delayed(const Duration(milliseconds: 800));
 
       // Essayer d'activer l'ultra grand angle (zoom min < 1.0)
+      _useWideAngle = false;
       try {
         final minZoom = await _controller!.getMinZoomLevel();
         if (minZoom < 1.0) {
@@ -228,6 +229,10 @@ class CameraService {
       } catch (_) {
         // Ignorer si échec (reste en normal)
       }
+
+      // Les cibles dépendent de l'objectif : 23 en ultra grand angle,
+      // 42 avec l'objectif principal.
+      _generateTargets();
 
       // PAS DE VERROUILLAGE D'EXPOSITION NI DE FOCUS (on supprime _lockExposureAndFocus)
       // OpenCV Panorama a BESOIN que chaque image soit nette et correctement exposée.
@@ -607,10 +612,9 @@ class CameraService {
         capturedAt: DateTime.now(),
         rowIndex: target.rowIndex,
         indexInRow: target.indexInRow,
-        // FOV FORCE PORTRAIT ULTRA-WIDE
-        // Vertical = Grand côté (~100°), Horizontal = Petit côté (~83°)
-        hFov: isWide ? 83.0 : null,
-        vFov: isWide ? 100.0 : null,
+        // FOV portrait ultra grand angle, recadré en 16:9 par le plugin
+        hFov: isWide ? AppConstants.wideHFov : null,
+        vFov: isWide ? AppConstants.wideVFov : null,
       );
 
       // Marquer cette cible comme capturée

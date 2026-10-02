@@ -6,32 +6,17 @@ class AppConstants {
   /// 5 rangées : zénith, haute, horizon, basse, nadir
   static const int numberOfRows = 5;
 
-  /// Angles d'élévation pour chaque rangée (en degrés)
-  /// Couverture complète de -90° (nadir) à +90° (zénith)
-  /// Convention: positif = vers le haut, négatif = vers le bas
-  static const List<double> rowElevations = [
-    75.0, // Zénith (presque tout en haut)
-    35.0, // Haute
-    0.0, // Horizon
-    -35.0, // Basse
-    -75.0, // Nadir (presque tout en bas)
-  ];
+  /// Grille de capture adaptée à l'objectif utilisé (voir [CaptureGrid]).
+  /// L'ordre des rangées est toujours : zénith, haute, horizon, basse, nadir.
+  static CaptureGrid grid({required bool wideAngle}) =>
+      wideAngle ? CaptureGrid.wide : CaptureGrid.standard;
 
-  /// Nombre de photos par rangée
-  /// Augmenté considérablement pour assurer un énorme chevauchement (Overlap > 40%)
-  /// C'est indispensable pour que le mode PANORAMA d'OpenCV réussisse
-  /// l'ajustement des paramètres (évite ERR_CAMERA_PARAMS_ADJUST_FAIL).
-  static const List<int> photosPerRow = [
-    5, // Zénith (75°)
-    10, // Haute (35°)
-    12, // Horizon (0°)
-    10, // Basse (-35°)
-    5, // Nadir (-75°)
-  ];
-
-  /// Nombre total de photos
-  static int get totalPhotos =>
-      photosPerRow.fold(0, (sum, count) => sum + count);
+  /// Champ de vision d'une photo ultra grand angle en portrait (degrés).
+  /// Mesuré sur Pixel 6a : objectif 2,35 mm, capteur 5,04 × 3,77 mm
+  /// (≈ 94° × 77,5° en 4:3). Le plugin camera ne capture qu'en 16:9, ce qui
+  /// recadre le petit côté à ≈ 62°.
+  static const double wideHFov = 62.0;
+  static const double wideVFov = 94.0;
 
   /// Tolérance angulaire pour valider la position (en degrés)
   /// Réduction pour garantir un alignement presque millimétrique
@@ -80,4 +65,36 @@ class AppConstants {
     'Basse ↘',
     'Nadir ↓',
   ];
+}
+
+/// Disposition des cibles sur la sphère : élévation et nombre de photos de
+/// chaque rangée, calculés pour garder ≥ 30 % de chevauchement entre photos
+/// voisines (minimum pour l'alignement OpenCV).
+class CaptureGrid {
+  const CaptureGrid({required this.rowElevations, required this.photosPerRow});
+
+  /// Élévation de chaque rangée en degrés (positif = vers le haut).
+  final List<double> rowElevations;
+
+  /// Nombre de photos dans chaque rangée.
+  final List<int> photosPerRow;
+
+  int get totalPhotos => photosPerRow.fold(0, (sum, count) => sum + count);
+
+  /// Objectif principal (portrait 16:9 ≈ 40° × 66°) : 42 photos.
+  static const standard = CaptureGrid(
+    rowElevations: [75.0, 35.0, 0.0, -35.0, -75.0],
+    photosPerRow: [5, 10, 12, 10, 5],
+  );
+
+  /// Ultra grand angle (portrait 16:9 ≈ 62° × 94°) : 23 photos.
+  /// - Horizon : 9 photos espacées de 40° → ≈ 36 % de chevauchement.
+  /// - ±45° : 6 photos espacées de 60°, chaque photo couvrant ≈ 88°
+  ///   d'azimut à cette élévation → ≈ 32 % ; leurs 94° de hauteur montent
+  ///   jusqu'à ≈ 92°, d'où une seule photo suffisante à chaque pôle.
+  /// - Pôles à ±85° : au-delà de 80°, le guidage ignore l'azimut.
+  static const wide = CaptureGrid(
+    rowElevations: [85.0, 45.0, 0.0, -45.0, -85.0],
+    photosPerRow: [1, 6, 9, 6, 1],
+  );
 }
