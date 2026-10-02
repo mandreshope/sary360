@@ -25,6 +25,15 @@ android {
         versionName = flutter.versionName
     }
 
+    // Extrait les .so sur le disque à l'installation : OpenCV liste le dossier
+    // de ses bibliothèques pour chercher des plugins de parallélisme, ce qui
+    // échoue (E/cv::error) quand elles restent compressées dans l'APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
