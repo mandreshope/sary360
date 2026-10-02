@@ -311,8 +311,9 @@ class _CapturePageState extends ConsumerState<CapturePage> {
     BuildContext context,
     CaptureViewState viewModel,
   ) {
-    if (viewModel.state == CaptureState.capturing)
+    if (viewModel.state == CaptureState.capturing) {
       return const SizedBox.shrink();
+    }
 
     double azDiff = viewModel.targetAzimuth - viewModel.currentAzimuth;
     if (azDiff > 180) azDiff -= 360;

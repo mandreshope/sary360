@@ -1,4 +1,4 @@
-library custom_panorama;
+library;
 
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -8,18 +8,18 @@ import 'package:flutter_cube/flutter_cube.dart';
 
 enum SensorControl {
   /// No sensor used.
-  None,
+  none,
 
   /// Use gyroscope and accelerometer.
-  Orientation,
+  orientation,
 
   /// Use magnetometer and accelerometer. The logitude 0 points to north.
-  AbsoluteOrientation,
+  absoluteOrientation,
 }
 
 class Panorama extends StatefulWidget {
-  Panorama({
-    Key? key,
+  const Panorama({
+    super.key,
     this.latitude = 0,
     this.longitude = 0,
     this.zoom = 1.0,
@@ -35,7 +35,7 @@ class Panorama extends StatefulWidget {
     this.latSegments = 32,
     this.lonSegments = 64,
     this.interactive = true,
-    this.sensorControl = SensorControl.None,
+    this.sensorControl = SensorControl.none,
     this.croppedArea = const Rect.fromLTWH(0.0, 0.0, 1.0, 1.0),
     this.croppedFullWidth = 1.0,
     this.croppedFullHeight = 1.0,
@@ -46,7 +46,7 @@ class Panorama extends StatefulWidget {
     this.onLongPressEnd,
     this.child,
     this.hotspots,
-  }) : super(key: key);
+  });
 
   /// The initial latitude, in degrees, between -90 and 90. default to 0 (the vertical center of the image).
   final double latitude;
@@ -130,7 +130,7 @@ class Panorama extends StatefulWidget {
   final List<Hotspot>? hotspots;
 
   @override
-  _PanoramaState createState() => _PanoramaState();
+  State<Panorama> createState() => _PanoramaState();
 }
 
 class _PanoramaState extends State<Panorama>
@@ -144,8 +144,8 @@ class _PanoramaState extends State<Panorama>
   double zoomDelta = 0;
   late Offset _lastFocalPoint;
   double? _lastZoom;
-  double _radius = 500;
-  double _dampingFactor = 0.05;
+  final double _radius = 500;
+  final double _dampingFactor = 0.05;
   double _animateDirection = 1.0;
   late AnimationController _controller;
   double screenOrientation = 0.0;
@@ -209,17 +209,16 @@ class _PanoramaState extends State<Panorama>
         math.pi *
         offset.dx /
         scene!.camera.viewportHeight;
-    if (_lastZoom == null) {
-      _lastZoom = scene!.camera.zoom;
-    }
+    _lastZoom ??= scene!.camera.zoom;
     zoomDelta += _lastZoom! * details.scale - (scene!.camera.zoom + zoomDelta);
-    if (widget.sensorControl == SensorControl.None &&
+    if (widget.sensorControl == SensorControl.none &&
         !_controller.isAnimating) {
       _controller.reset();
       if (widget.animSpeed != 0) {
         _controller.repeat();
-      } else
+      } else {
         _controller.forward();
+      }
     }
   }
 
@@ -270,10 +269,11 @@ class _PanoramaState extends State<Panorama>
         longitude = (lon + longitude < minLon ? minLon : maxLon) - lon;
         // reverse rotation when reaching the boundary
         if (widget.animSpeed != 0) {
-          if (widget.animReverse)
+          if (widget.animReverse) {
             _animateDirection *= -1.0;
-          else
+          } else {
             _controller.stop();
+          }
         }
       }
     }
@@ -433,8 +433,9 @@ class _PanoramaState extends State<Panorama>
       duration: Duration(milliseconds: 60000),
       vsync: this,
     )..addListener(_updateView);
-    if (widget.sensorControl != SensorControl.None || widget.animSpeed != 0)
+    if (widget.sensorControl != SensorControl.none || widget.animSpeed != 0) {
       _controller.repeat();
+    }
   }
 
   @override

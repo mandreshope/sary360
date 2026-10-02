@@ -538,7 +538,9 @@ class CameraService {
   bool _isAlignedForCapture(CaptureTarget target) {
     double azimuthDiff = (_currentOrientation.azimuth - target.azimuth);
     if (azimuthDiff > 180) azimuthDiff -= 360;
-    while (azimuthDiff < -180) azimuthDiff += 360;
+    while (azimuthDiff < -180) {
+      azimuthDiff += 360;
+    }
 
     final elevationDiff = (_currentOrientation.pitch - target.elevation).abs();
 

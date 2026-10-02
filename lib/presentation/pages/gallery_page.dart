@@ -105,6 +105,7 @@ class _GalleryPageState extends State<GalleryPage> {
         await file.delete();
         await _loadPanoramas(); // Recharger la liste
       } catch (e) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Erreur lors de la suppression: $e')),
         );
