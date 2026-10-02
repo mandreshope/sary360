@@ -1,6 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../widgets/custom_panorama.dart' as pw;
+import 'package:go_router/go_router.dart';
+
+import '../../core/router/app_routes.dart';
 import '../../domain/models/panorama.dart';
 
 class ViewerPage extends StatelessWidget {
@@ -38,9 +41,7 @@ class ViewerPage extends StatelessWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.of(context).pop();
-        },
+        onPressed: () => context.go(AppRoutes.home),
         backgroundColor: Colors.white,
         child: const Icon(Icons.home, color: Colors.black87),
       ),

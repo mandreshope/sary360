@@ -6,7 +6,9 @@ import '../viewmodels/capture_viewmodel.dart';
 import '../widgets/progress_indicator.dart';
 import '../widgets/spherical_guide.dart';
 
-import 'viewer_page.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/router/app_routes.dart';
 
 class CapturePage extends ConsumerStatefulWidget {
   const CapturePage({super.key});
@@ -42,11 +44,9 @@ class _CapturePageState extends ConsumerState<CapturePage> {
       case CaptureState.completed:
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (viewModel.completedPanorama != null) {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (_) =>
-                    ViewerPage(panorama: viewModel.completedPanorama!),
-              ),
+            context.pushReplacement(
+              AppRoutes.viewer,
+              extra: viewModel.completedPanorama!,
             );
           }
         });
@@ -124,7 +124,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           top: 16,
           left: 16,
           child: IconButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => context.pop(),
             icon: const Icon(Icons.close, color: Colors.white, size: 28),
             style: IconButton.styleFrom(
               backgroundColor: Colors.black45,

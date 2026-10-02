@@ -1,225 +1,219 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../pages/capture_page.dart';
-import '../pages/gallery_page.dart';
 
-class HomePage extends StatelessWidget {
+import '../../core/router/app_routes.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/theme/constellation_colors.dart';
+import '../../core/widgets/constellation_orb.dart';
+import '../../core/widgets/glass_panel.dart';
+import '../../core/widgets/starfield_background.dart';
+import '../widgets/home/settings_sheet.dart';
+
+/// Écran d'accueil : emblème animé, création d'une sphère, accès galerie.
+class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Colors.blue.shade900, Colors.purple.shade900],
-          ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Logo/Icon
-                  Container(
-                    width: 120,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.panorama_photosphere,
-                      size: 64,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 32),
+  State<HomePage> createState() => _HomePageState();
+}
 
-                  // Titre
-                  const Text(
-                    'Sary360',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 48,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 2,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
+class _HomePageState extends State<HomePage>
+    with SingleTickerProviderStateMixin {
+  /// Pilote l'entrée échelonnée des éléments.
+  late final AnimationController _intro = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..forward();
 
-                  // Description
-                  const Text(
-                    'Créez des panoramas 360° immersifs\nentièrement hors ligne',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 16,
-                      height: 1.5,
-                    ),
-                  ),
-                  const SizedBox(height: 64),
+  @override
+  void dispose() {
+    _intro.dispose();
+    super.dispose();
+  }
 
-                  // Bouton principal
-                  ElevatedButton(
-                    onPressed: () => _startCapture(context),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.purple.shade900,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 48,
-                        vertical: 20,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      elevation: 8,
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.camera_alt, size: 28),
-                        SizedBox(width: 12),
-                        Text(
-                          'Créer un panorama',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Bouton Galerie
-                  OutlinedButton(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const GalleryPage()),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 32,
-                        vertical: 16,
-                      ),
-                      side: const BorderSide(color: Colors.white70, width: 2),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.photo_library),
-                        SizedBox(width: 12),
-                        Text(
-                          'Voir mes captures',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 48),
-
-                  // Fonctionnalités
-                  _buildFeatures(),
-                ],
-              ),
-            ),
-          ),
-        ),
+  /// Apparition décalée : chaque élément démarre à `start` (0..1).
+  Widget _staggered(double start, Widget child) {
+    final anim = CurvedAnimation(
+      parent: _intro,
+      curve: Interval(
+        start,
+        (start + 0.5).clamp(0, 1),
+        curve: AppMotion.bounce,
       ),
     );
-  }
-
-  Widget _buildFeatures() {
-    return Column(
-      children: [
-        _FeatureItem(
-          icon: Icons.trending_flat,
-          text: 'Guidage rotation intelligente',
+    return AnimatedBuilder(
+      animation: anim,
+      builder: (context, child) => Opacity(
+        opacity: anim.value.clamp(0.0, 1.0),
+        child: Transform.translate(
+          offset: Offset(0, 24 * (1 - anim.value)),
+          child: child,
         ),
-        const SizedBox(height: 16),
-        _FeatureItem(icon: Icons.offline_bolt, text: '100% offline'),
-        const SizedBox(height: 16),
-        _FeatureItem(
-          icon: Icons.panorama_horizontal,
-          text: 'Viewer 360° interactif',
-        ),
-      ],
+      ),
+      child: child,
     );
   }
 
-  Future<void> _startCapture(BuildContext context) async {
-    // Demander les permissions nécessaires
-    final cameraStatus = await Permission.camera.request();
-    // Note: Standard motion sensors (gyro/accel) do not require runtime permission on Android.
-    // Permission.sensors refers to BODY_SENSORS (heart rate, etc.) which we don't use.
-
-    if (cameraStatus.isGranted) {
-      if (context.mounted) {
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const CapturePage()));
-      }
+  Future<void> _startCapture() async {
+    HapticFeedback.mediumImpact();
+    final status = await Permission.camera.request();
+    if (!mounted) return;
+    if (status.isGranted) {
+      context.push(AppRoutes.capture);
     } else {
-      if (context.mounted) {
-        _showPermissionDialog(context);
-      }
+      _showPermissionDialog(permanentlyDenied: status.isPermanentlyDenied);
     }
   }
 
-  void _showPermissionDialog(BuildContext context) {
-    showDialog(
+  void _showPermissionDialog({required bool permanentlyDenied}) {
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Permissions requises'),
-        content: const Text(
-          'L\'application a besoin d\'accéder à la caméra et aux capteurs '
-          'pour créer des panoramas. Veuillez activer ces permissions dans '
-          'les paramètres.',
+        title: const Text('Caméra requise'),
+        content: Text(
+          permanentlyDenied
+              ? 'L\'accès à la caméra a été refusé. Activez-le dans les '
+                    'paramètres du système pour capturer une sphère.'
+              : 'Sary360 a besoin de la caméra pour photographier chaque '
+                    'étoile de votre constellation.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Annuler'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () {
               Navigator.pop(context);
-              openAppSettings();
+              if (permanentlyDenied) {
+                openAppSettings();
+              } else {
+                _startCapture();
+              }
             },
-            child: const Text('Paramètres'),
+            child: Text(permanentlyDenied ? 'Paramètres' : 'Réessayer'),
           ),
         ],
       ),
     );
   }
-}
-
-class _FeatureItem extends StatelessWidget {
-  final IconData icon;
-  final String text;
-
-  const _FeatureItem({required this.icon, required this.text});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: Colors.white70, size: 20),
-        const SizedBox(width: 12),
-        Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-      ],
+    final text = Theme.of(context).textTheme;
+    final c = context.colors;
+    final orbSize = (MediaQuery.sizeOf(context).shortestSide * 0.78).clamp(
+      220.0,
+      340.0,
+    );
+
+    return Scaffold(
+      body: StarfieldBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _staggered(
+                  0,
+                  Row(
+                    children: [
+                      Text('SARY360', style: text.labelSmall),
+                      const Spacer(),
+                      GlassIconButton(
+                        icon: Icons.tune_rounded,
+                        tooltip: 'Réglages',
+                        onPressed: () => showSettingsSheet(context),
+                      ),
+                    ],
+                  ),
+                ),
+                // L'emblème occupe l'espace restant, sans jamais déborder
+                // sur les petits écrans.
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, box) => Center(
+                      child: _staggered(
+                        0.1,
+                        Hero(
+                          tag: ConstellationOrb.heroTag,
+                          child: ConstellationOrb(
+                            size: orbSize.clamp(0.0, box.maxHeight),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                _staggered(
+                  0.25,
+                  Text('Capturez\nvotre ciel.', style: text.displayMedium),
+                ),
+                const SizedBox(height: 12),
+                _staggered(
+                  0.32,
+                  Text(
+                    'Reliez les étoiles autour de vous pour créer une '
+                    'sphère 360° immersive, assemblée sur votre téléphone.',
+                    style: text.bodyLarge?.copyWith(color: c.textSecondary),
+                  ),
+                ),
+                const SizedBox(height: 28),
+                _staggered(
+                  0.42,
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _startCapture,
+                      icon: const Icon(Icons.blur_circular_rounded),
+                      label: const Text('Nouvelle sphère'),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _staggered(
+                  0.5,
+                  _GalleryCard(onTap: () => context.push(AppRoutes.gallery)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Accès à la galerie, sous forme de carte en verre.
+class _GalleryCard extends StatelessWidget {
+  const _GalleryCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final c = context.colors;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: GlassPanel(
+        radius: AppRadii.pill,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Row(
+          children: [
+            Icon(Icons.grid_view_rounded, color: c.accent, size: 22),
+            const SizedBox(width: 14),
+            Expanded(child: Text('Mes sphères', style: text.labelLarge)),
+            Icon(Icons.arrow_forward_rounded, color: c.textSecondary, size: 20),
+          ],
+        ),
+      ),
     );
   }
 }

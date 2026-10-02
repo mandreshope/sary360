@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../core/constants/app_constants.dart';
 import '../../domain/models/panorama.dart';
-import 'viewer_page.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/router/app_routes.dart';
 
 class GalleryPage extends StatefulWidget {
   const GalleryPage({super.key});
@@ -75,9 +77,7 @@ class _GalleryPageState extends State<GalleryPage> {
       photoCount: 0, // Inconnu
     );
 
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => ViewerPage(panorama: panorama)));
+    context.push(AppRoutes.viewer, extra: panorama);
   }
 
   Future<void> _deletePanorama(File file) async {

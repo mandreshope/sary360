@@ -1,36 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'presentation/pages/home_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+import 'app.dart';
+import 'presentation/providers/settings_providers.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Verrouiller l'orientation en portrait
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
+  // Portrait uniquement : la capture repose sur l'orientation du capteur.
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  runApp(const ProviderScope(child: Sary360App()));
-}
+  // Affichage bord à bord : le fond étoilé passe sous les barres système.
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+    ),
+  );
 
-class Sary360App extends StatelessWidget {
-  const Sary360App({super.key});
+  // Les réglages sont lus avant le premier frame pour décider de la route
+  // initiale (onboarding ou accueil) sans clignotement.
+  final prefs = await SharedPreferences.getInstance();
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Sary360',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
-    );
-  }
+  runApp(
+    ProviderScope(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+      child: const Sary360App(),
+    ),
+  );
 }
