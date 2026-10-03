@@ -120,6 +120,10 @@ constexpr double kMaxRayErrorDeg = 2.0;      // erreur résiduelle maximale
 constexpr double kMaxCorrectionDeg = 35.0;   // écart maximal aux capteurs
 constexpr double kMaxFocalRatio = 1.35;
 
+/// Une photo cède les zones recouvertes à une voisine au moins 2 fois plus
+/// nette (log 2) du même groupe affiné.
+constexpr double kSharpnessPriorityLog = 0.693;
+
 /// Angle (radians) de la rotation relative entre deux matrices.
 double rotationAngle(const Mat& a, const Mat& b) {
   Mat a64, b64;
@@ -191,6 +195,83 @@ double meanRayError(const std::vector<cv::detail::ImageFeatures>& features,
     }
   }
   return count > 0 ? sum / count : 0.0;
+}
+
+/// Netteté relative de chaque photo (logarithme, moyenne nulle), estimée sur
+/// le même contenu : autour de chaque point apparié d'une paire fiable, on
+/// compare la variance du laplacien dans les deux photos. Une photo bougée
+/// ou mal mise au point perd ses hautes fréquences, quel que soit le sujet
+/// (un mur blanc net reste « net » par rapport à sa voisine). Les rapports
+/// des paires sont ensuite réconciliés par moindres carrés (Gauss-Seidel).
+/// Les photos sans paire fiable restent à 0 (neutres).
+std::vector<double> relativeSharpness(const std::vector<cv::detail::ImageFeatures>& features,
+                                      const std::vector<cv::detail::MatchesInfo>& pairs,
+                                      const std::vector<Mat>& laplacians) {
+  const int n = static_cast<int>(laplacians.size());
+  constexpr int kHalf = 6;  // fenêtre 13 × 13 à la résolution de travail
+  const auto localEnergy = [&](int img, cv::Point2f pt) {
+    const Mat& lap = laplacians[img];
+    const Rect r = Rect(cv::Point(cvRound(pt.x) - kHalf, cvRound(pt.y) - kHalf),
+                        Size(2 * kHalf + 1, 2 * kHalf + 1)) &
+                   Rect(0, 0, lap.cols, lap.rows);
+    if (r.area() < kHalf * kHalf) return -1.0;
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(lap(r), mean, stddev);
+    return stddev[0] * stddev[0];
+  };
+
+  struct Edge {
+    int i, j;
+    double logRatio;  // log(netteté_i / netteté_j)
+  };
+  std::vector<Edge> edges;
+  for (const auto& m : pairs) {
+    if (m.src_img_idx < 0 || m.src_img_idx >= m.dst_img_idx || m.confidence <= kPairConfidence) {
+      continue;
+    }
+    std::vector<double> ratios;
+    for (size_t k = 0; k < m.matches.size(); ++k) {
+      if (!m.inliers_mask[k]) continue;
+      const double ei =
+          localEnergy(m.src_img_idx, features[m.src_img_idx].keypoints[m.matches[k].queryIdx].pt);
+      const double ej =
+          localEnergy(m.dst_img_idx, features[m.dst_img_idx].keypoints[m.matches[k].trainIdx].pt);
+      if (ei > 1.0 && ej > 1.0) ratios.push_back(std::log(ei / ej));
+    }
+    if (ratios.size() < 8) continue;
+    std::nth_element(ratios.begin(), ratios.begin() + ratios.size() / 2, ratios.end());
+    edges.push_back({m.src_img_idx, m.dst_img_idx, ratios[ratios.size() / 2]});
+  }
+
+  std::vector<double> x(n, 0.0);
+  std::vector<int> degree(n, 0);
+  for (const auto& e : edges) {
+    ++degree[e.i];
+    ++degree[e.j];
+  }
+  for (int iter = 0; iter < 200; ++iter) {
+    for (int v = 0; v < n; ++v) {
+      if (degree[v] == 0) continue;
+      double sum = 0;
+      for (const auto& e : edges) {
+        if (e.i == v) sum += x[e.j] + e.logRatio;
+        if (e.j == v) sum += x[e.i] - e.logRatio;
+      }
+      x[v] = sum / degree[v];
+    }
+  }
+  // Recentrage sur les photos reliées.
+  double mean = 0;
+  int count = 0;
+  for (int v = 0; v < n; ++v) {
+    if (degree[v] > 0) {
+      mean += x[v];
+      ++count;
+    }
+  }
+  if (count > 0) mean /= count;
+  for (int v = 0; v < n; ++v) x[v] = degree[v] > 0 ? x[v] - mean : 0.0;
+  return x;
 }
 
 /// Composantes reliées du graphe des paires fiables (au moins 2 photos).
@@ -358,6 +439,7 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
                       cv::ORB::HARRIS_SCORE, 31, kOrbFastThreshold);
   std::vector<cv::detail::ImageFeatures> features(n);
   std::vector<UMat> seamImages(n);
+  std::vector<Mat> laplacians(n);
   std::vector<cv::detail::CameraParams> sensorCams(n);
   std::vector<Mat> sensorR(n);
 
@@ -378,6 +460,11 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
     seam.copyTo(seamImages[i]);
 
     cv::detail::computeImageFeatures(orb, work, features[i]);
+    {
+      Mat gray;
+      cv::cvtColor(work, gray, cv::COLOR_BGR2GRAY);
+      cv::Laplacian(gray, laplacians[i], CV_32F);
+    }
     features[i].img_idx = i;
 
     Mat r(3, 3, CV_32F);
@@ -458,6 +545,14 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
   ctx.lap("mise en correspondance");
   SARY_LOG("%d paires candidates, %d fiables", candidatePairs, matchedPairs);
 
+  const std::vector<double> sharpness = relativeSharpness(features, pairwise, laplacians);
+  laplacians.clear();
+  if (std::getenv("SARY_DEBUG") != nullptr) {
+    for (int i = 0; i < n; ++i) {
+      SARY_LOG("netteté relative photo %d : %.2f", i, std::exp(sharpness[i]));
+    }
+  }
+
   // ── 3. Affinage (bundle adjustment) par composante reliée ────────────
   // Chaque groupe de photos reliées par des correspondances fiables est
   // affiné séparément (BundleAdjusterRay, initialisé avec les capteurs),
@@ -470,6 +565,8 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
   result->median_correction_deg = -1.f;
   int refinedPhotos = 0;
   std::vector<bool> isRefined(n, false);
+  std::vector<int> refinedGroup(n, -1);  // groupe affiné de chaque photo
+  int groupId = 0;
   std::vector<double> acceptedCorrections;
   const bool debug = std::getenv("SARY_DEBUG") != nullptr;
 
@@ -541,7 +638,9 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
       for (int k = 0; k < m; ++k) {
         cams[comp[k]] = refined[k];
         isRefined[comp[k]] = true;
+        refinedGroup[comp[k]] = groupId;
       }
+      ++groupId;
       refinedPhotos += m;
       acceptedCorrections.insert(acceptedCorrections.end(), corrections.begin(),
                                  corrections.end());
@@ -612,6 +711,40 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
   ctx.checkCancel();
   ctx.progress(0.65f);
   ctx.lap("projection + exposition");
+
+  // Priorité aux photos nettes : là où une photo nettement plus nette du
+  // même groupe affiné la recouvre, une photo floue (bougé, mise au point)
+  // est retirée avant la recherche des raccords. Elle ne comble plus que les
+  // zones que personne d'autre ne couvre. La règle est limitée aux photos
+  // alignées par points-clés : imposer une photo mal placée créerait des
+  // dédoublements. Les recouvrements sont testés sur les masques d'origine,
+  // dans le repère du panorama.
+  {
+    std::vector<Mat> original(n);
+    for (int i = 0; i < n; ++i) seamMasks[i].copyTo(original[i]);
+    int yielded = 0;
+    for (int i = 0; i < n; ++i) {
+      Mat mask = seamMasks[i].getMat(cv::ACCESS_RW);
+      const Rect roiI(seamCorners[i], mask.size());
+      bool changed = false;
+      for (int j = 0; j < n; ++j) {
+        if (j == i || refinedGroup[i] < 0 || refinedGroup[j] != refinedGroup[i] ||
+            sharpness[j] - sharpness[i] < kSharpnessPriorityLog) {
+          continue;
+        }
+        const Rect roiJ(seamCorners[j], original[j].size());
+        const Rect overlap = roiI & roiJ;
+        if (overlap.empty()) continue;
+        Mat mine = mask(overlap - seamCorners[i]);
+        const Mat theirs = original[j](overlap - seamCorners[j]);
+        mine.setTo(0, theirs);
+        changed = true;
+      }
+      if (changed) ++yielded;
+      mask.release();
+    }
+    if (yielded > 0) SARY_LOG("%d photos floues cèdent les zones recouvertes", yielded);
+  }
 
   {
     std::vector<UMat> seamWarpedF(n);
