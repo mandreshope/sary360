@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/constellation_colors.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/widgets/glass_panel.dart';
+import '../../data/services/gallery_export_service.dart';
 import '../../domain/models/panorama.dart';
 import '../providers/settings_providers.dart';
 import '../widgets/custom_panorama.dart' as pw;
@@ -28,6 +29,11 @@ class ViewerPage extends ConsumerStatefulWidget {
 
 class _ViewerPageState extends ConsumerState<ViewerPage> {
   bool _gyro = false;
+
+  final _exportService = GalleryExportService();
+
+  /// Export vers la galerie du téléphone en cours.
+  bool _exporting = false;
 
   /// Change à chaque recentrage : recrée la vue avec son orientation initiale.
   int _viewKey = 0;
@@ -52,6 +58,45 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
   void dispose() {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  Future<void> _exportToGallery() async {
+    if (_exporting) return;
+    HapticFeedback.selectionClick();
+    setState(() => _exporting = true);
+    final result = await _exportService.export(widget.panorama);
+    if (!mounted) return;
+    setState(() => _exporting = false);
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    if (result == GalleryExportResult.saved) {
+      HapticFeedback.mediumImpact();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Sphère enregistrée dans la galerie (album Sary360)',
+          ),
+          action: SnackBarAction(
+            label: 'Ouvrir',
+            onPressed: _exportService.openGallery,
+          ),
+        ),
+      );
+    } else {
+      HapticFeedback.heavyImpact();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(switch (result) {
+            GalleryExportResult.accessDenied =>
+              'Accès à la galerie refusé : autorisez-le dans les réglages.',
+            GalleryExportResult.notEnoughSpace =>
+              'Espace de stockage insuffisant.',
+            _ => 'L\'export a échoué.',
+          }),
+        ),
+      );
+    }
   }
 
   void _toggleGyro() {
@@ -118,6 +163,8 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
             panorama: widget.panorama,
             gyro: _gyro,
             onToggleGyro: _toggleGyro,
+            exporting: _exporting,
+            onExport: _exportToGallery,
             onRecenter: _recenter,
             appTheme: appTheme,
           ),
@@ -135,6 +182,8 @@ class _Chrome extends StatelessWidget {
     required this.panorama,
     required this.gyro,
     required this.onToggleGyro,
+    required this.exporting,
+    required this.onExport,
     required this.onRecenter,
     required this.appTheme,
   });
@@ -143,6 +192,8 @@ class _Chrome extends StatelessWidget {
   final Panorama panorama;
   final bool gyro;
   final VoidCallback onToggleGyro;
+  final bool exporting;
+  final VoidCallback onExport;
   final VoidCallback onRecenter;
   final ThemeData appTheme;
 
@@ -205,6 +256,12 @@ class _Chrome extends StatelessWidget {
                         onTap: onRecenter,
                       ),
                       _ToolButton(
+                        icon: Icons.download_rounded,
+                        label: 'Exporter',
+                        busy: exporting,
+                        onTap: onExport,
+                      ),
+                      _ToolButton(
                         icon: Icons.info_outline_rounded,
                         label: 'Infos',
                         onTap: () => _showInfo(context, panorama, appTheme),
@@ -228,12 +285,16 @@ class _ToolButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.active = false,
+    this.busy = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
   final bool active;
+
+  /// Action en cours : l'icône laisse place à un indicateur de progression.
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -244,11 +305,11 @@ class _ToolButton extends StatelessWidget {
       toggled: active,
       label: label,
       child: GestureDetector(
-        onTap: onTap,
+        onTap: busy ? null : onTap,
         child: AnimatedContainer(
           duration: AppMotion.medium,
           curve: AppMotion.standard,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: active ? c.accent : Colors.transparent,
             borderRadius: BorderRadius.circular(AppRadii.pill),
@@ -256,7 +317,18 @@ class _ToolButton extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: fg, size: 22),
+              SizedBox.square(
+                dimension: 22,
+                child: busy
+                    ? Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: c.accent,
+                        ),
+                      )
+                    : Icon(icon, color: fg, size: 22),
+              ),
               const SizedBox(height: 4),
               Text(
                 label,

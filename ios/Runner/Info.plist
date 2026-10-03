@@ -49,6 +49,8 @@
 	<string>This application needs access to your Camera in order to capture 360 Images</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This application needs access to your Microphone in order to capture videos</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Sary360 enregistre vos sphères 360° dans Photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This application needs access to your Photo Library in order to save the captured images</string>
 </dict>

@@ -55,6 +55,7 @@ dependencies:
   google_fonts: ^9.0.0
   shared_preferences: ^2.5.5
   ffi: ^2.2.0
+  gal: ^2.3.3
 
   
   # UI utilities
