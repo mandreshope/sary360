@@ -6,38 +6,32 @@ class AppConstants {
   /// 5 rangées : zénith, haute, horizon, basse, nadir
   static const int numberOfRows = 5;
 
-  /// Angles d'élévation pour chaque rangée (en degrés)
-  /// Couverture complète de -90° (nadir) à +90° (zénith)
-  /// Convention: positif = vers le haut, négatif = vers le bas
-  static const List<double> rowElevations = [
-    75.0, // Zénith (presque tout en haut)
-    35.0, // Haute
-    0.0, // Horizon
-    -35.0, // Basse
-    -75.0, // Nadir (presque tout en bas)
-  ];
+  /// Grille de capture adaptée à l'objectif utilisé (voir [CaptureGrid]).
+  /// L'ordre des rangées est toujours : zénith, haute, horizon, basse, nadir.
+  static CaptureGrid grid({required bool wideAngle}) =>
+      wideAngle ? CaptureGrid.wide : CaptureGrid.standard;
 
-  /// Nombre de photos par rangée
-  /// Réduit pour une expérience plus rapide tout en gardant une bonne couverture
-  /// Le FOV large de la caméra compense le nombre réduit de photos
-  static const List<int> photosPerRow = [
-    3, // Zénith (75°) - petit cercle, 3 suffit
-    6, // Haute (35°)
-    8, // Horizon (0°) - cercle complet
-    6, // Basse (-35°)
-    3, // Nadir (-75°) - petit cercle
-  ];
+  /// Champ de vision d'une photo ultra grand angle en portrait (degrés).
+  /// Pixel 6a : calibration intrinsèque 1888,6 px sur 4032 px (≈ 94° × 62°
+  /// en 16:9), mais la correction de distorsion de l'appareil recadre
+  /// l'image d'environ 20 % : les focales mesurées par l'assemblage donnent
+  /// ≈ 53° × 83° (photo 1080 × 1920). L'assemblage affine de toute façon la
+  /// focale à partir des points-clés.
+  static const double wideHFov = 53.0;
+  static const double wideVFov = 83.0;
 
-  /// Nombre total de photos
-  static int get totalPhotos =>
-      photosPerRow.fold(0, (sum, count) => sum + count);
+  /// Champ de vision de l'objectif principal en portrait 16:9 (degrés).
+  /// Pixel 6a : objectif 4,38 mm, capteur 5,64 × 4,23 mm (≈ 65,6° × 51,6°
+  /// en 4:3), petit côté recadré à ≈ 40° en 16:9.
+  static const double mainHFov = 40.0;
+  static const double mainVFov = 65.6;
 
   /// Tolérance angulaire pour valider la position (en degrés)
-  /// Réduction (18°) pour éviter le décalage perçu et garantir la précision
-  static const double angleTolerance = 18.0;
+  /// Réduction pour garantir un alignement presque millimétrique
+  static const double angleTolerance = 12.0;
 
   /// Tolérance d'élévation pour valider la rangée (en degrés)
-  static const double elevationTolerance = 18.0;
+  static const double elevationTolerance = 12.0;
 
   // ── Image processing ──
   static const int maxImageWidth = 1920;
@@ -79,4 +73,37 @@ class AppConstants {
     'Basse ↘',
     'Nadir ↓',
   ];
+}
+
+/// Disposition des cibles sur la sphère : élévation et nombre de photos de
+/// chaque rangée, calculés pour garder ≥ 30 % de chevauchement entre photos
+/// voisines (minimum pour l'alignement OpenCV).
+class CaptureGrid {
+  const CaptureGrid({required this.rowElevations, required this.photosPerRow});
+
+  /// Élévation de chaque rangée en degrés (positif = vers le haut).
+  final List<double> rowElevations;
+
+  /// Nombre de photos dans chaque rangée.
+  final List<int> photosPerRow;
+
+  int get totalPhotos => photosPerRow.fold(0, (sum, count) => sum + count);
+
+  /// Objectif principal (portrait 16:9 ≈ 40° × 66°) : 42 photos.
+  static const standard = CaptureGrid(
+    rowElevations: [75.0, 35.0, 0.0, -35.0, -75.0],
+    photosPerRow: [5, 10, 12, 10, 5],
+  );
+
+  /// Ultra grand angle (portrait 16:9 ≈ 53° × 83°) : 26 photos.
+  /// - Horizon : 10 photos espacées de 36° → ≈ 32 % de chevauchement.
+  /// - ±45° : 7 photos espacées de 51°, chaque photo couvrant ≈ 75°
+  ///   d'azimut à cette élévation → ≈ 32 % ; leurs 83° de hauteur montent
+  ///   jusqu'à ≈ 86°.
+  /// - Pôles à ±85° : une photo chacun (au-delà de 80°, le guidage ignore
+  ///   l'azimut).
+  static const wide = CaptureGrid(
+    rowElevations: [85.0, 45.0, 0.0, -45.0, -85.0],
+    photosPerRow: [1, 7, 10, 7, 1],
+  );
 }

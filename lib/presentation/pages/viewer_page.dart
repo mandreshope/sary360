@@ -1,190 +1,508 @@
 import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
-import '../widgets/custom_panorama.dart' as pw;
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/theme/app_theme.dart';
+import '../../core/theme/constellation_colors.dart';
+import '../../core/utils/formatters.dart';
+import '../../core/widgets/glass_panel.dart';
+import '../../data/services/gallery_export_service.dart';
 import '../../domain/models/panorama.dart';
+import '../providers/settings_providers.dart';
+import '../widgets/custom_panorama.dart' as pw;
+import 'gallery_page.dart' show kThumbnailCacheWidth, panoramaHeroTag;
 
-class ViewerPage extends StatelessWidget {
-  final Panorama panorama;
-
+/// Visionneuse immersive : glisser pour tourner, pincer pour zoomer,
+/// gyroscope activable, recentrage.
+class ViewerPage extends ConsumerStatefulWidget {
   const ViewerPage({super.key, required this.panorama});
 
+  final Panorama panorama;
+
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(panorama.name, style: const TextStyle(color: Colors.white)),
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () => _showInfo(context),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          // Viewer 360°
-          pw.Panorama(
-            child: Image.file(
-              File(panorama.stitchedImagePath),
-              fit: BoxFit.cover,
-            ),
-          ),
+  ConsumerState<ViewerPage> createState() => _ViewerPageState();
+}
 
-          // Instructions overlay (disparaît after 3 secondes)
-          _InstructionsOverlay(),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.of(context).pop();
-        },
-        backgroundColor: Colors.white,
-        child: const Icon(Icons.home, color: Colors.black87),
-      ),
-    );
+class _ViewerPageState extends ConsumerState<ViewerPage> {
+  bool _gyro = false;
+
+  final _exportService = GalleryExportService();
+
+  /// Export vers la galerie du téléphone en cours.
+  bool _exporting = false;
+
+  /// Change à chaque recentrage : recrée la vue avec son orientation initiale.
+  int _viewKey = 0;
+
+  /// Commandes masquées / affichées d'un tap.
+  bool _chromeVisible = true;
+
+  /// La sphère 3D apparaît en fondu après la transition Hero.
+  bool _sphereVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Immersion : barres système masquées tant que la visionneuse est ouverte.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    Future.delayed(AppMotion.slow, () {
+      if (mounted) setState(() => _sphereVisible = true);
+    });
   }
 
-  void _showInfo(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Informations'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _InfoRow(label: 'Nom', value: panorama.name),
-            _InfoRow(label: 'Date', value: _formatDate(panorama.createdAt)),
-            _InfoRow(label: 'Photos', value: '${panorama.photoCount}'),
-            _InfoRow(
-              label: 'Taille',
-              value: _formatFileSize(panorama.stitchedImagePath),
-            ),
-          ],
+  @override
+  void dispose() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    super.dispose();
+  }
+
+  Future<void> _exportToGallery() async {
+    if (_exporting) return;
+    HapticFeedback.selectionClick();
+    setState(() => _exporting = true);
+    final result = await _exportService.export(widget.panorama);
+    if (!mounted) return;
+    setState(() => _exporting = false);
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    if (result == GalleryExportResult.saved) {
+      HapticFeedback.mediumImpact();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Sphère enregistrée dans la galerie (album Sary360)',
+          ),
+          action: SnackBarAction(
+            label: 'Ouvrir',
+            onPressed: _exportService.openGallery,
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Fermer'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatDate(DateTime date) {
-    return '${date.day.toString().padLeft(2, '0')}/'
-        '${date.month.toString().padLeft(2, '0')}/'
-        '${date.year} '
-        '${date.hour.toString().padLeft(2, '0')}:'
-        '${date.minute.toString().padLeft(2, '0')}';
-  }
-
-  String _formatFileSize(String path) {
-    try {
-      final file = File(path);
-      if (!file.existsSync()) return 'N/A';
-      final bytes = file.lengthSync();
-      if (bytes < 1024) return '$bytes B';
-      if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    } catch (e) {
-      return 'N/A';
+      );
+    } else {
+      HapticFeedback.heavyImpact();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(switch (result) {
+            GalleryExportResult.accessDenied =>
+              'Accès à la galerie refusé : autorisez-le dans les réglages.',
+            GalleryExportResult.notEnoughSpace =>
+              'Espace de stockage insuffisant.',
+            _ => 'L\'export a échoué.',
+          }),
+        ),
+      );
     }
   }
-}
 
-class _InfoRow extends StatelessWidget {
-  final String label;
-  final String value;
+  void _toggleGyro() {
+    HapticFeedback.selectionClick();
+    setState(() => _gyro = !_gyro);
+  }
 
-  const _InfoRow({required this.label, required this.value});
+  void _recenter() {
+    HapticFeedback.lightImpact();
+    setState(() => _viewKey++);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final file = File(widget.panorama.stitchedImagePath);
+    // Toujours en thème sombre : les commandes sont posées sur la photo, et
+    // le verre clair rendait le texte illisible en mode clair. L'accent
+    // choisi par l'utilisateur est conservé.
+    final accent = ref.watch(
+      settingsControllerProvider.select((s) => s.accent),
+    );
+    // Thème de l'app (clair ou sombre), réservé à la feuille d'infos qui a
+    // son propre fond.
+    final appTheme = Theme.of(context);
+    return Theme(
+      data: AppTheme.dark(accent),
+      child: _buildViewer(file, appTheme),
+    );
+  }
+
+  Widget _buildViewer(File file, ThemeData appTheme) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          SizedBox(
-            width: 80,
-            child: Text(
-              '$label:',
-              style: const TextStyle(fontWeight: FontWeight.bold),
+          // Image plane de la transition Hero, recouverte ensuite par la
+          // sphère 3D.
+          Hero(
+            tag: panoramaHeroTag(widget.panorama),
+            child: Image.file(
+              file,
+              fit: BoxFit.cover,
+              cacheWidth: kThumbnailCacheWidth,
+              gaplessPlayback: true,
             ),
           ),
-          Expanded(child: Text(value)),
+          AnimatedOpacity(
+            opacity: _sphereVisible ? 1 : 0,
+            duration: AppMotion.slow,
+            curve: AppMotion.standard,
+            child: pw.Panorama(
+              key: ValueKey(_viewKey),
+              sensorControl: _gyro
+                  ? pw.SensorControl.orientation
+                  : pw.SensorControl.none,
+              onTap: (_, _, _) =>
+                  setState(() => _chromeVisible = !_chromeVisible),
+              child: Image.file(file),
+            ),
+          ),
+          _Chrome(
+            visible: _chromeVisible,
+            panorama: widget.panorama,
+            gyro: _gyro,
+            onToggleGyro: _toggleGyro,
+            exporting: _exporting,
+            onExport: _exportToGallery,
+            onRecenter: _recenter,
+            appTheme: appTheme,
+          ),
+          const _GestureHint(),
         ],
       ),
     );
   }
 }
 
-class _InstructionsOverlay extends StatefulWidget {
+/// Barre supérieure et pilule de commandes, en verre dépoli.
+class _Chrome extends StatelessWidget {
+  const _Chrome({
+    required this.visible,
+    required this.panorama,
+    required this.gyro,
+    required this.onToggleGyro,
+    required this.exporting,
+    required this.onExport,
+    required this.onRecenter,
+    required this.appTheme,
+  });
+
+  final bool visible;
+  final Panorama panorama;
+  final bool gyro;
+  final VoidCallback onToggleGyro;
+  final bool exporting;
+  final VoidCallback onExport;
+  final VoidCallback onRecenter;
+  final ThemeData appTheme;
+
   @override
-  State<_InstructionsOverlay> createState() => _InstructionsOverlayState();
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedOpacity(
+        opacity: visible ? 1 : 0,
+        duration: AppMotion.medium,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    GlassIconButton(
+                      icon: Icons.arrow_back_rounded,
+                      tooltip: 'Retour',
+                      onPressed: () => context.pop(),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GlassPanel(
+                        radius: AppRadii.pill,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 12,
+                        ),
+                        child: Text(
+                          Formatters.dateTime(panorama.createdAt),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: text.labelLarge?.copyWith(
+                            color: context.colors.textPrimary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const Spacer(),
+                GlassPanel(
+                  radius: AppRadii.pill,
+                  padding: const EdgeInsets.all(6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _ToolButton(
+                        icon: Icons.screen_rotation_alt_rounded,
+                        label: 'Gyroscope',
+                        active: gyro,
+                        onTap: onToggleGyro,
+                      ),
+                      _ToolButton(
+                        icon: Icons.center_focus_strong_rounded,
+                        label: 'Recentrer',
+                        onTap: onRecenter,
+                      ),
+                      _ToolButton(
+                        icon: Icons.download_rounded,
+                        label: 'Exporter',
+                        busy: exporting,
+                        onTap: onExport,
+                      ),
+                      _ToolButton(
+                        icon: Icons.info_outline_rounded,
+                        label: 'Infos',
+                        onTap: () => _showInfo(context, panorama, appTheme),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-class _InstructionsOverlayState extends State<_InstructionsOverlay> {
+/// Bouton de la pilule : icône + libellé, surligné à l'accent quand actif.
+class _ToolButton extends StatelessWidget {
+  const _ToolButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool active;
+
+  /// Action en cours : l'icône laisse place à un indicateur de progression.
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final fg = active ? c.onAccent : c.textPrimary;
+    return Semantics(
+      button: true,
+      toggled: active,
+      label: label,
+      child: GestureDetector(
+        onTap: busy ? null : onTap,
+        child: AnimatedContainer(
+          duration: AppMotion.medium,
+          curve: AppMotion.standard,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: active ? c.accent : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox.square(
+                dimension: 22,
+                child: busy
+                    ? Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: c.accent,
+                        ),
+                      )
+                    : Icon(icon, color: fg, size: 22),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: fg, letterSpacing: 0.4),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Consigne de geste, affichée quelques secondes à l'ouverture.
+class _GestureHint extends StatefulWidget {
+  const _GestureHint();
+
+  @override
+  State<_GestureHint> createState() => _GestureHintState();
+}
+
+class _GestureHintState extends State<_GestureHint> {
   bool _visible = true;
 
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() => _visible = false);
-      }
+    Future.delayed(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _visible = false);
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedOpacity(
-      opacity: _visible ? 1.0 : 0.0,
-      duration: const Duration(milliseconds: 500),
-      child: Container(
-        alignment: Alignment.bottomCenter,
-        padding: const EdgeInsets.all(24),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(12),
+    final text = Theme.of(context).textTheme;
+    final c = context.colors;
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: _visible ? 1 : 0,
+        duration: AppMotion.slow,
+        child: Center(
+          child: GlassPanel(
+            radius: AppRadii.md,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.swipe_rounded, color: c.textPrimary, size: 28),
+                const SizedBox(height: 8),
+                Text(
+                  'Glissez pour explorer · pincez pour zoomer',
+                  style: text.bodyMedium?.copyWith(color: c.textPrimary),
+                ),
+                Text(
+                  'Touchez pour masquer les commandes',
+                  style: text.bodySmall?.copyWith(color: c.textSecondary),
+                ),
+              ],
+            ),
           ),
-          child: const Column(
+        ),
+      ),
+    );
+  }
+}
+
+/// Feuille d'infos, affichée avec le thème de l'app [appTheme] (et non le
+/// thème sombre forcé des commandes posées sur la photo).
+Future<void> _showInfo(
+  BuildContext context,
+  Panorama p,
+  ThemeData appTheme,
+) async {
+  final file = File(p.stitchedImagePath);
+  final size = file.existsSync() ? file.lengthSync() : 0;
+  // Dimensions lues dans l'en-tête de l'image, sans la décoder entièrement.
+  String dims = '—';
+  try {
+    final buffer = await ui.ImmutableBuffer.fromFilePath(file.path);
+    final descriptor = await ui.ImageDescriptor.encoded(buffer);
+    dims = '${descriptor.width} × ${descriptor.height}';
+    descriptor.dispose();
+    buffer.dispose();
+  } catch (_) {}
+  if (!context.mounted) return;
+
+  final text = appTheme.textTheme;
+  final c = appTheme.extension<ConstellationColors>()!;
+  await showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    builder: (context) => Theme(
+      data: appTheme,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: GlassPanel(
+          tint: c.backgroundElevated.withValues(alpha: 0.85),
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+          child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.touch_app, color: Colors.white, size: 20),
-                  SizedBox(width: 8),
-                  Text(
-                    'Glissez pour regarder autour',
-                    style: TextStyle(color: Colors.white, fontSize: 14),
-                  ),
-                ],
+              Text('Informations', style: text.headlineSmall),
+              const SizedBox(height: 20),
+              _InfoRow(
+                icon: Icons.event_rounded,
+                label: 'Créée le',
+                value: Formatters.dateTime(p.createdAt),
               ),
-              SizedBox(height: 8),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.phone_android, color: Colors.white, size: 20),
-                  SizedBox(width: 8),
-                  Text(
-                    'Bougez votre téléphone',
-                    style: TextStyle(color: Colors.white, fontSize: 14),
-                  ),
-                ],
+              _InfoRow(
+                icon: Icons.aspect_ratio_rounded,
+                label: 'Définition',
+                value: dims,
+              ),
+              _InfoRow(
+                icon: Icons.sd_storage_rounded,
+                label: 'Taille',
+                value: Formatters.bytes(size),
+              ),
+              _InfoRow(
+                icon: Icons.public_rounded,
+                label: 'Projection',
+                value: 'Équirectangulaire 360° · Photo Sphere',
               ),
             ],
           ),
         ),
+      ),
+    ),
+  );
+}
+
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final c = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: c.accentSoft,
+              borderRadius: BorderRadius.circular(AppRadii.sm),
+            ),
+            child: Icon(icon, color: c.accent, size: 20),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label.toUpperCase(), style: text.labelSmall),
+                const SizedBox(height: 2),
+                Text(value, style: text.bodyLarge),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

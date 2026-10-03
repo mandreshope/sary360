@@ -1,25 +1,26 @@
-library custom_panorama;
+library;
 
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_cube/flutter_cube.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 enum SensorControl {
   /// No sensor used.
-  None,
+  none,
 
   /// Use gyroscope and accelerometer.
-  Orientation,
+  orientation,
 
   /// Use magnetometer and accelerometer. The logitude 0 points to north.
-  AbsoluteOrientation,
+  absoluteOrientation,
 }
 
 class Panorama extends StatefulWidget {
-  Panorama({
-    Key? key,
+  const Panorama({
+    super.key,
     this.latitude = 0,
     this.longitude = 0,
     this.zoom = 1.0,
@@ -35,7 +36,7 @@ class Panorama extends StatefulWidget {
     this.latSegments = 32,
     this.lonSegments = 64,
     this.interactive = true,
-    this.sensorControl = SensorControl.None,
+    this.sensorControl = SensorControl.none,
     this.croppedArea = const Rect.fromLTWH(0.0, 0.0, 1.0, 1.0),
     this.croppedFullWidth = 1.0,
     this.croppedFullHeight = 1.0,
@@ -46,7 +47,7 @@ class Panorama extends StatefulWidget {
     this.onLongPressEnd,
     this.child,
     this.hotspots,
-  }) : super(key: key);
+  });
 
   /// The initial latitude, in degrees, between -90 and 90. default to 0 (the vertical center of the image).
   final double latitude;
@@ -130,7 +131,7 @@ class Panorama extends StatefulWidget {
   final List<Hotspot>? hotspots;
 
   @override
-  _PanoramaState createState() => _PanoramaState();
+  State<Panorama> createState() => _PanoramaState();
 }
 
 class _PanoramaState extends State<Panorama>
@@ -144,8 +145,8 @@ class _PanoramaState extends State<Panorama>
   double zoomDelta = 0;
   late Offset _lastFocalPoint;
   double? _lastZoom;
-  double _radius = 500;
-  double _dampingFactor = 0.05;
+  final double _radius = 500;
+  final double _dampingFactor = 0.05;
   double _animateDirection = 1.0;
   late AnimationController _controller;
   double screenOrientation = 0.0;
@@ -155,6 +156,16 @@ class _PanoramaState extends State<Panorama>
   late StreamController<Null> _streamController;
   Stream<Null>? _stream;
   ImageStream? _imageStream;
+
+  /// Écouteur unique de [_imageStream] (même instance pour l'ajout et le
+  /// retrait).
+  late final ImageStreamListener _imageListener = ImageStreamListener(
+    _updateTexture,
+  );
+
+  /// Image reçue du flux : c'est une copie dont ce widget est responsable
+  /// (voir ImageInfo.dispose), libérée au remplacement et à la fermeture.
+  ImageInfo? _imageInfo;
 
   void _handleTapUp(TapUpDetails details) {
     final Vector3 o = positionToLatLon(
@@ -209,17 +220,16 @@ class _PanoramaState extends State<Panorama>
         math.pi *
         offset.dx /
         scene!.camera.viewportHeight;
-    if (_lastZoom == null) {
-      _lastZoom = scene!.camera.zoom;
-    }
+    _lastZoom ??= scene!.camera.zoom;
     zoomDelta += _lastZoom! * details.scale - (scene!.camera.zoom + zoomDelta);
-    if (widget.sensorControl == SensorControl.None &&
+    if (widget.sensorControl == SensorControl.none &&
         !_controller.isAnimating) {
       _controller.reset();
       if (widget.animSpeed != 0) {
         _controller.repeat();
-      } else
+      } else {
         _controller.forward();
+      }
     }
   }
 
@@ -270,10 +280,11 @@ class _PanoramaState extends State<Panorama>
         longitude = (lon + longitude < minLon ? minLon : maxLon) - lon;
         // reverse rotation when reaching the boundary
         if (widget.animSpeed != 0) {
-          if (widget.animReverse)
+          if (widget.animReverse) {
             _animateDirection *= -1.0;
-          else
+          } else {
             _controller.stop();
+          }
         }
       }
     }
@@ -300,6 +311,12 @@ class _PanoramaState extends State<Panorama>
   }
 
   void _updateTexture(ImageInfo imageInfo, bool synchronousCall) {
+    if (!mounted) {
+      imageInfo.dispose();
+      return;
+    }
+    _imageInfo?.dispose();
+    _imageInfo = imageInfo;
     surface?.mesh.texture = imageInfo.image;
     surface?.mesh.textureRect = Rect.fromLTWH(
       0,
@@ -313,10 +330,9 @@ class _PanoramaState extends State<Panorama>
 
   void _loadTexture(ImageProvider? provider) {
     if (provider == null) return;
-    _imageStream?.removeListener(ImageStreamListener(_updateTexture));
+    _imageStream?.removeListener(_imageListener);
     _imageStream = provider.resolve(ImageConfiguration());
-    ImageStreamListener listener = ImageStreamListener(_updateTexture);
-    _imageStream!.addListener(listener);
+    _imageStream!.addListener(_imageListener);
   }
 
   void _onSceneCreated(Scene scene) {
@@ -421,11 +437,38 @@ class _PanoramaState extends State<Panorama>
     return Stack(children: widgets);
   }
 
+  DateTime? _lastGyroEvent;
+
+  /// Pilotage au gyroscope : la vitesse de rotation du téléphone est
+  /// intégrée dans la longitude (rotation autour de l'axe vertical de
+  /// l'écran) et la latitude (bascule avant / arrière).
+  void _updateSensorControl() {
+    _orientationSubscription?.cancel();
+    _orientationSubscription = null;
+    _lastGyroEvent = null;
+    if (widget.sensorControl == SensorControl.none) return;
+    _orientationSubscription =
+        gyroscopeEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          final now = DateTime.now();
+          final last = _lastGyroEvent;
+          _lastGyroEvent = now;
+          if (last == null || scene == null) return;
+          final dt = now.difference(last).inMicroseconds / 1e6;
+          if (dt <= 0 || dt > 0.2) return;
+          longitude -= event.y * dt;
+          latitude += event.x * dt;
+          _updateView();
+        });
+  }
+
   @override
   void initState() {
     super.initState();
     latitude = degrees(widget.latitude);
     longitude = degrees(widget.longitude);
+    _updateSensorControl();
     _streamController = StreamController<Null>.broadcast();
     _stream = _streamController.stream;
 
@@ -433,13 +476,22 @@ class _PanoramaState extends State<Panorama>
       duration: Duration(milliseconds: 60000),
       vsync: this,
     )..addListener(_updateView);
-    if (widget.sensorControl != SensorControl.None || widget.animSpeed != 0)
+    if (widget.sensorControl != SensorControl.none || widget.animSpeed != 0) {
       _controller.repeat();
+    }
   }
 
   @override
   void dispose() {
-    _imageStream?.removeListener(ImageStreamListener(_updateTexture));
+    _imageStream?.removeListener(_imageListener);
+    // Libère la texture (≈ 32 Mo pour une sphère 4096 × 2048) et retire
+    // l'image du cache : sans cela, la réouverture recevait une copie mise
+    // en cache et la sphère s'affichait en noir.
+    surface?.mesh.texture = null;
+    scene?.texture = null;
+    _imageInfo?.dispose();
+    _imageInfo = null;
+    widget.child?.image.evict();
     _orientationSubscription?.cancel();
     _screenOrientSubscription?.cancel();
     _controller.dispose();
@@ -450,6 +502,7 @@ class _PanoramaState extends State<Panorama>
   @override
   void didUpdateWidget(Panorama oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.sensorControl != oldWidget.sensorControl) _updateSensorControl();
     if (surface == null) return;
     if (widget.latSegments != oldWidget.latSegments ||
         widget.lonSegments != oldWidget.lonSegments ||

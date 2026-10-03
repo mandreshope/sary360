@@ -1,3 +1,5 @@
+import '../../core/math/quaternion.dart';
+
 /// Représente une photo capturée pour le panorama sphérique
 class CapturedPhoto {
   final String path;
@@ -22,6 +24,10 @@ class CapturedPhoto {
   /// Champ de vision vertical utilisé (null = défaut)
   final double? vFov;
 
+  /// Orientation appareil → monde (Est, Nord, Haut) mesurée au
+  /// déclenchement. Point de départ de l'assemblage.
+  final Quaternion orientation;
+
   const CapturedPhoto({
     required this.path,
     required this.azimuth,
@@ -31,6 +37,7 @@ class CapturedPhoto {
     required this.indexInRow,
     this.hFov,
     this.vFov,
+    required this.orientation,
   });
 
   CapturedPhoto copyWith({
@@ -42,6 +49,7 @@ class CapturedPhoto {
     int? indexInRow,
     double? hFov,
     double? vFov,
+    Quaternion? orientation,
   }) {
     return CapturedPhoto(
       path: path ?? this.path,
@@ -52,6 +60,7 @@ class CapturedPhoto {
       indexInRow: indexInRow ?? this.indexInRow,
       hFov: hFov ?? this.hFov,
       vFov: vFov ?? this.vFov,
+      orientation: orientation ?? this.orientation,
     );
   }
 }

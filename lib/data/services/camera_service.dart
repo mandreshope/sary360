@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/math/camera_rotation.dart';
+import '../../core/math/quaternion.dart';
 import '../../domain/models/captured_photo.dart';
 
 /// Position cible pour une capture
@@ -156,9 +158,10 @@ class CameraService {
     // Horizon d'abord (le plus naturel), puis haut, zénith, bas, nadir
     final rowOrder = [2, 1, 0, 3, 4]; // index dans rowElevations
 
+    final grid = AppConstants.grid(wideAngle: _useWideAngle);
     for (final row in rowOrder) {
-      final int photosInRow = AppConstants.photosPerRow[row];
-      final double elevation = AppConstants.rowElevations[row];
+      final int photosInRow = grid.photosPerRow[row];
+      final double elevation = grid.rowElevations[row];
       final double azimuthStep = 360.0 / photosInRow;
 
       // Offset alterné entre les rangées pour un meilleur recouvrement
@@ -182,6 +185,13 @@ class CameraService {
   /// Initialise la caméra et les capteurs
   Future<void> initialize() async {
     try {
+      // Nettoyage de sécurité en cas de rechargement/re-initialisation
+      // Empêche la fuite de mémoire native et l'erreur de MessageQueue (Dead thread)
+      if (_controller != null) {
+        await _controller?.dispose();
+        _controller = null;
+      }
+
       _cameras = await availableCameras();
       if (_cameras == null || _cameras!.isEmpty) {
         throw Exception('Aucune caméra disponible');
@@ -205,13 +215,13 @@ class CameraService {
         DeviceOrientation.portraitUp,
       ]);
 
-      _generateTargets();
       _startSensors();
 
       // Attendre que le pipeline natif Android soit complètement prêt
       await Future.delayed(const Duration(milliseconds: 800));
 
       // Essayer d'activer l'ultra grand angle (zoom min < 1.0)
+      _useWideAngle = false;
       try {
         final minZoom = await _controller!.getMinZoomLevel();
         if (minZoom < 1.0) {
@@ -222,7 +232,13 @@ class CameraService {
         // Ignorer si échec (reste en normal)
       }
 
-      await _lockExposureAndFocus();
+      // Les cibles dépendent de l'objectif : 26 en ultra grand angle,
+      // 42 avec l'objectif principal.
+      _generateTargets();
+
+      // PAS DE VERROUILLAGE D'EXPOSITION NI DE FOCUS (on supprime _lockExposureAndFocus)
+      // OpenCV Panorama a BESOIN que chaque image soit nette et correctement exposée.
+      // Si on verrouille l'exposition sur le ciel, la terre sera noire (et vice versa).
       _isReady = true;
     } catch (e) {
       throw Exception('Erreur d\'initialisation de la caméra: $e');
@@ -497,6 +513,34 @@ class CameraService {
     }
   }
 
+  /// Orientation appareil → monde (ENU) d'un téléphone tenu en portrait,
+  /// sans roulis, visant exactement [target]. L'azimut des cibles est
+  /// relatif au cap de départ : l'assemblage recentre de toute façon le
+  /// panorama sur la première photo.
+  Quaternion _targetOrientation(CaptureTarget target) {
+    final az = target.azimuth * math.pi / 180;
+    final el = target.elevation * math.pi / 180;
+    // Axe de visée et axe « droite » horizontal, en ENU.
+    final f = [
+      math.sin(az) * math.cos(el),
+      math.cos(az) * math.cos(el),
+      math.sin(el),
+    ];
+    final r = [math.cos(az), -math.sin(az), 0.0];
+    // Haut de l'écran = droite × visée ; l'écran regarde vers −visée.
+    final u = [
+      r[1] * f[2] - r[2] * f[1],
+      r[2] * f[0] - r[0] * f[2],
+      r[0] * f[1] - r[1] * f[0],
+    ];
+    // Colonnes : axes x, y, z de l'appareil exprimés en ENU.
+    return Quaternion.fromRotationMatrix([
+      r[0], u[0], -f[0], //
+      r[1], u[1], -f[1], //
+      r[2], u[2], -f[2],
+    ]);
+  }
+
   /// Vérifie si l'orientation actuelle est proche de la cible
   bool _isNearTarget(CaptureTarget target) {
     // Différence d'azimut avec gestion du wrap-around
@@ -529,7 +573,9 @@ class CameraService {
   bool _isAlignedForCapture(CaptureTarget target) {
     double azimuthDiff = (_currentOrientation.azimuth - target.azimuth);
     if (azimuthDiff > 180) azimuthDiff -= 360;
-    while (azimuthDiff < -180) azimuthDiff += 360;
+    while (azimuthDiff < -180) {
+      azimuthDiff += 360;
+    }
 
     final elevationDiff = (_currentOrientation.pitch - target.elevation).abs();
 
@@ -544,17 +590,6 @@ class CameraService {
   // ═══════════════════════════════════════════════════════════════════════
   //  CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
-
-  /// Verrouille l'exposition et le focus
-  Future<void> _lockExposureAndFocus() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    try {
-      await _controller!.setExposureMode(ExposureMode.locked);
-      await _controller!.setFocusMode(FocusMode.locked);
-    } catch (_) {
-      // Certains appareils ne supportent pas le verrouillage
-    }
-  }
 
   /// Capture une photo au point courant (avec retry pour les erreurs Android)
   Future<CapturedPhoto> capturePhoto() async {
@@ -583,6 +618,14 @@ class CameraService {
 
     _isTakingPicture = true;
     try {
+      // Orientation mesurée au déclenchement (moyenne glissante gravité +
+      // champ magnétique), avant l'attente de l'obturateur. Elle sert de
+      // point de départ à l'assemblage. Repli sur l'orientation de la cible
+      // si les mesures sont dégénérées.
+      final orientation =
+          CameraRotation.deviceToWorldFromSensors(_gravity, _magnetic) ??
+          _targetOrientation(currentTarget!);
+
       final XFile image = await _takePictureWithRetry();
 
       final tempDir = await getTemporaryDirectory();
@@ -607,10 +650,10 @@ class CameraService {
         capturedAt: DateTime.now(),
         rowIndex: target.rowIndex,
         indexInRow: target.indexInRow,
-        // FOV FORCE PORTRAIT ULTRA-WIDE
-        // Vertical = Grand côté (~100°), Horizontal = Petit côté (~83°)
-        hFov: isWide ? 83.0 : null,
-        vFov: isWide ? 100.0 : null,
+        // FOV portrait ultra grand angle, recadré en 16:9 par le plugin
+        hFov: isWide ? AppConstants.wideHFov : AppConstants.mainHFov,
+        vFov: isWide ? AppConstants.wideVFov : AppConstants.mainVFov,
+        orientation: orientation,
       );
 
       // Marquer cette cible comme capturée
@@ -627,8 +670,10 @@ class CameraService {
       _nearTargetFrames = 0;
       _confirmedNear = false;
 
-      // Délai minimum pour laisser le temps au pipeline caméra
-      await Future.delayed(const Duration(milliseconds: 150));
+      // Délai prolongé pour laisser le temps à l'autofocus et l'exposition
+      // de s'ajuster avec la toute nouvelle vue pour que la luminosité
+      // des photos soit identique (fondamental pour la création de la sphère OpenCV)
+      await Future.delayed(const Duration(milliseconds: 300));
 
       return photo;
     } catch (e) {

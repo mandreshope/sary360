@@ -1,0 +1,23 @@
+# Génération des bindings FFI du module natif d'assemblage.
+# Commande : dart run ffigen --config ffigen.yaml
+name: SaryStitcherBindings
+description: Bindings FFI du module C++ d'assemblage (native/stitcher).
+output: lib/data/native/sary_stitcher_bindings.g.dart
+headers:
+  entry-points:
+    - native/stitcher/include/sary_stitcher.h
+  include-directives:
+    - native/stitcher/include/sary_stitcher.h
+functions:
+  include:
+    - sary_.*
+structs:
+  include:
+    - Sary.*
+macros:
+  include:
+    - SARY_.*
+preamble: |
+  // Fichier généré par ffigen à partir de native/stitcher/include/sary_stitcher.h.
+  // Ne pas modifier à la main : relancer `dart run ffigen --config ffigen.yaml`.
+  // ignore_for_file: type=lint

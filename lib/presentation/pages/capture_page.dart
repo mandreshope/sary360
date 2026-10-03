@@ -6,7 +6,9 @@ import '../viewmodels/capture_viewmodel.dart';
 import '../widgets/progress_indicator.dart';
 import '../widgets/spherical_guide.dart';
 
-import 'viewer_page.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/router/app_routes.dart';
 
 class CapturePage extends ConsumerStatefulWidget {
   const CapturePage({super.key});
@@ -42,11 +44,9 @@ class _CapturePageState extends ConsumerState<CapturePage> {
       case CaptureState.completed:
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (viewModel.completedPanorama != null) {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (_) =>
-                    ViewerPage(panorama: viewModel.completedPanorama!),
-              ),
+            context.pushReplacement(
+              AppRoutes.viewer,
+              extra: viewModel.completedPanorama!,
             );
           }
         });
@@ -124,7 +124,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           top: 16,
           left: 16,
           child: IconButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => context.pop(),
             icon: const Icon(Icons.close, color: Colors.white, size: 28),
             style: IconButton.styleFrom(
               backgroundColor: Colors.black45,
@@ -157,7 +157,10 @@ class _CapturePageState extends ConsumerState<CapturePage> {
           ),
         ),
 
-        // Réticule central
+        // Cadre rectangulaire flottant + point blanc (cible)
+        _buildTargetFramePreview(context, viewModel),
+
+        // Cercle central fixe d'alignement
         Center(child: _buildReticle(viewModel.isNearTarget)),
 
         // Indicateur d'élévation à gauche
@@ -300,6 +303,64 @@ class _CapturePageState extends ConsumerState<CapturePage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTargetFramePreview(
+    BuildContext context,
+    CaptureViewState viewModel,
+  ) {
+    if (viewModel.state == CaptureState.capturing) {
+      return const SizedBox.shrink();
+    }
+
+    double azDiff = viewModel.targetAzimuth - viewModel.currentAzimuth;
+    if (azDiff > 180) azDiff -= 360;
+    if (azDiff < -180) azDiff += 360;
+
+    final elDiff = viewModel.targetElevation - viewModel.currentElevation;
+
+    // Facteur d'échelle (à ajuster selon la FoV de la caméra)
+    const pixelPerDegree = 15.0;
+
+    final dx = azDiff * pixelPerDegree;
+    final dy = -elDiff * pixelPerDegree;
+
+    final isNear = viewModel.isNearTarget;
+    final color = isNear ? Colors.greenAccent : Colors.white;
+
+    return Center(
+      child: Transform.translate(
+        offset: Offset(dx, dy),
+        child: Container(
+          // Représente le champ de vision approximatif de la photo cible
+          width: 220,
+          height: 300,
+          decoration: BoxDecoration(
+            border: Border.all(color: color.withValues(alpha: 0.6), width: 2),
+            borderRadius: BorderRadius.circular(16),
+            color: color.withValues(alpha: 0.05),
+          ),
+          child: Center(
+            // Le point central cible que l'utilisateur doit superposer au réticule central
+            child: Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.5),
+                    blurRadius: 10,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -470,6 +531,17 @@ class _CapturePageState extends ConsumerState<CapturePage> {
                 fontWeight: FontWeight.w500,
               ),
             ),
+            const SizedBox(height: 32),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  ref.read(captureViewModelProvider.notifier).cancelStitching(),
+              icon: const Icon(Icons.close_rounded),
+              label: const Text('Annuler'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+              ),
+            ),
           ],
         ),
       ),
@@ -520,7 +592,7 @@ class _CapturePageState extends ConsumerState<CapturePage> {
   }
 }
 
-/// Réticule au centre de l'écran
+/// Cercle central fixe d'alignement
 class _ReticlePainter extends CustomPainter {
   final Color color;
   final bool isNear;
@@ -533,46 +605,10 @@ class _ReticlePainter extends CustomPainter {
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = isNear ? 2.5 : 1.5;
+      ..strokeWidth = isNear ? 3.0 : 2.0;
 
-    // Cercle
-    canvas.drawCircle(center, 20, paint);
-
-    // Croix
-    final gap = 8.0;
-    final len = 16.0;
-    // Haut
-    canvas.drawLine(
-      Offset(center.dx, center.dy - gap),
-      Offset(center.dx, center.dy - gap - len),
-      paint,
-    );
-    // Bas
-    canvas.drawLine(
-      Offset(center.dx, center.dy + gap),
-      Offset(center.dx, center.dy + gap + len),
-      paint,
-    );
-    // Gauche
-    canvas.drawLine(
-      Offset(center.dx - gap, center.dy),
-      Offset(center.dx - gap - len, center.dy),
-      paint,
-    );
-    // Droite
-    canvas.drawLine(
-      Offset(center.dx + gap, center.dy),
-      Offset(center.dx + gap + len, center.dy),
-      paint,
-    );
-
-    // Point central quand aligné
-    if (isNear) {
-      final dotPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(center, 4, dotPaint);
-    }
+    // Un grand cercle au centre
+    canvas.drawCircle(center, 30, paint);
   }
 
   @override
