@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_cube/flutter_cube.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 enum SensorControl {
   /// No sensor used.
@@ -156,6 +157,16 @@ class _PanoramaState extends State<Panorama>
   Stream<Null>? _stream;
   ImageStream? _imageStream;
 
+  /// Écouteur unique de [_imageStream] (même instance pour l'ajout et le
+  /// retrait).
+  late final ImageStreamListener _imageListener = ImageStreamListener(
+    _updateTexture,
+  );
+
+  /// Image reçue du flux : c'est une copie dont ce widget est responsable
+  /// (voir ImageInfo.dispose), libérée au remplacement et à la fermeture.
+  ImageInfo? _imageInfo;
+
   void _handleTapUp(TapUpDetails details) {
     final Vector3 o = positionToLatLon(
       details.localPosition.dx,
@@ -300,6 +311,12 @@ class _PanoramaState extends State<Panorama>
   }
 
   void _updateTexture(ImageInfo imageInfo, bool synchronousCall) {
+    if (!mounted) {
+      imageInfo.dispose();
+      return;
+    }
+    _imageInfo?.dispose();
+    _imageInfo = imageInfo;
     surface?.mesh.texture = imageInfo.image;
     surface?.mesh.textureRect = Rect.fromLTWH(
       0,
@@ -313,10 +330,9 @@ class _PanoramaState extends State<Panorama>
 
   void _loadTexture(ImageProvider? provider) {
     if (provider == null) return;
-    _imageStream?.removeListener(ImageStreamListener(_updateTexture));
+    _imageStream?.removeListener(_imageListener);
     _imageStream = provider.resolve(ImageConfiguration());
-    ImageStreamListener listener = ImageStreamListener(_updateTexture);
-    _imageStream!.addListener(listener);
+    _imageStream!.addListener(_imageListener);
   }
 
   void _onSceneCreated(Scene scene) {
@@ -421,11 +437,38 @@ class _PanoramaState extends State<Panorama>
     return Stack(children: widgets);
   }
 
+  DateTime? _lastGyroEvent;
+
+  /// Pilotage au gyroscope : la vitesse de rotation du téléphone est
+  /// intégrée dans la longitude (rotation autour de l'axe vertical de
+  /// l'écran) et la latitude (bascule avant / arrière).
+  void _updateSensorControl() {
+    _orientationSubscription?.cancel();
+    _orientationSubscription = null;
+    _lastGyroEvent = null;
+    if (widget.sensorControl == SensorControl.none) return;
+    _orientationSubscription =
+        gyroscopeEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          final now = DateTime.now();
+          final last = _lastGyroEvent;
+          _lastGyroEvent = now;
+          if (last == null || scene == null) return;
+          final dt = now.difference(last).inMicroseconds / 1e6;
+          if (dt <= 0 || dt > 0.2) return;
+          longitude -= event.y * dt;
+          latitude += event.x * dt;
+          _updateView();
+        });
+  }
+
   @override
   void initState() {
     super.initState();
     latitude = degrees(widget.latitude);
     longitude = degrees(widget.longitude);
+    _updateSensorControl();
     _streamController = StreamController<Null>.broadcast();
     _stream = _streamController.stream;
 
@@ -440,7 +483,15 @@ class _PanoramaState extends State<Panorama>
 
   @override
   void dispose() {
-    _imageStream?.removeListener(ImageStreamListener(_updateTexture));
+    _imageStream?.removeListener(_imageListener);
+    // Libère la texture (≈ 32 Mo pour une sphère 4096 × 2048) et retire
+    // l'image du cache : sans cela, la réouverture recevait une copie mise
+    // en cache et la sphère s'affichait en noir.
+    surface?.mesh.texture = null;
+    scene?.texture = null;
+    _imageInfo?.dispose();
+    _imageInfo = null;
+    widget.child?.image.evict();
     _orientationSubscription?.cancel();
     _screenOrientSubscription?.cancel();
     _controller.dispose();
@@ -451,6 +502,7 @@ class _PanoramaState extends State<Panorama>
   @override
   void didUpdateWidget(Panorama oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.sensorControl != oldWidget.sensorControl) _updateSensorControl();
     if (surface == null) return;
     if (widget.latSegments != oldWidget.latSegments ||
         widget.lonSegments != oldWidget.lonSegments ||
