@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -10,21 +11,22 @@ import '../../core/theme/constellation_colors.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/widgets/glass_panel.dart';
 import '../../domain/models/panorama.dart';
+import '../providers/settings_providers.dart';
 import '../widgets/custom_panorama.dart' as pw;
 import 'gallery_page.dart' show kThumbnailCacheWidth, panoramaHeroTag;
 
 /// Visionneuse immersive : glisser pour tourner, pincer pour zoomer,
 /// gyroscope activable, recentrage.
-class ViewerPage extends StatefulWidget {
+class ViewerPage extends ConsumerStatefulWidget {
   const ViewerPage({super.key, required this.panorama});
 
   final Panorama panorama;
 
   @override
-  State<ViewerPage> createState() => _ViewerPageState();
+  ConsumerState<ViewerPage> createState() => _ViewerPageState();
 }
 
-class _ViewerPageState extends State<ViewerPage> {
+class _ViewerPageState extends ConsumerState<ViewerPage> {
   bool _gyro = false;
 
   /// Change à chaque recentrage : recrée la vue avec son orientation initiale.
@@ -65,6 +67,22 @@ class _ViewerPageState extends State<ViewerPage> {
   @override
   Widget build(BuildContext context) {
     final file = File(widget.panorama.stitchedImagePath);
+    // Toujours en thème sombre : les commandes sont posées sur la photo, et
+    // le verre clair rendait le texte illisible en mode clair. L'accent
+    // choisi par l'utilisateur est conservé.
+    final accent = ref.watch(
+      settingsControllerProvider.select((s) => s.accent),
+    );
+    // Thème de l'app (clair ou sombre), réservé à la feuille d'infos qui a
+    // son propre fond.
+    final appTheme = Theme.of(context);
+    return Theme(
+      data: AppTheme.dark(accent),
+      child: _buildViewer(file, appTheme),
+    );
+  }
+
+  Widget _buildViewer(File file, ThemeData appTheme) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -101,6 +119,7 @@ class _ViewerPageState extends State<ViewerPage> {
             gyro: _gyro,
             onToggleGyro: _toggleGyro,
             onRecenter: _recenter,
+            appTheme: appTheme,
           ),
           const _GestureHint(),
         ],
@@ -117,6 +136,7 @@ class _Chrome extends StatelessWidget {
     required this.gyro,
     required this.onToggleGyro,
     required this.onRecenter,
+    required this.appTheme,
   });
 
   final bool visible;
@@ -124,6 +144,7 @@ class _Chrome extends StatelessWidget {
   final bool gyro;
   final VoidCallback onToggleGyro;
   final VoidCallback onRecenter;
+  final ThemeData appTheme;
 
   @override
   Widget build(BuildContext context) {
@@ -157,7 +178,9 @@ class _Chrome extends StatelessWidget {
                           Formatters.dateTime(panorama.createdAt),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: text.labelLarge?.copyWith(color: Colors.white),
+                          style: text.labelLarge?.copyWith(
+                            color: context.colors.textPrimary,
+                          ),
                         ),
                       ),
                     ),
@@ -184,7 +207,7 @@ class _Chrome extends StatelessWidget {
                       _ToolButton(
                         icon: Icons.info_outline_rounded,
                         label: 'Infos',
-                        onTap: () => _showInfo(context, panorama),
+                        onTap: () => _showInfo(context, panorama, appTheme),
                       ),
                     ],
                   ),
@@ -215,7 +238,7 @@ class _ToolButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    final fg = active ? c.onAccent : Colors.white;
+    final fg = active ? c.onAccent : c.textPrimary;
     return Semantics(
       button: true,
       toggled: active,
@@ -271,6 +294,7 @@ class _GestureHintState extends State<_GestureHint> {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
+    final c = context.colors;
     return IgnorePointer(
       child: AnimatedOpacity(
         opacity: _visible ? 1 : 0,
@@ -282,15 +306,15 @@ class _GestureHintState extends State<_GestureHint> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.swipe_rounded, color: Colors.white, size: 28),
+                Icon(Icons.swipe_rounded, color: c.textPrimary, size: 28),
                 const SizedBox(height: 8),
                 Text(
                   'Glissez pour explorer · pincez pour zoomer',
-                  style: text.bodyMedium?.copyWith(color: Colors.white),
+                  style: text.bodyMedium?.copyWith(color: c.textPrimary),
                 ),
                 Text(
                   'Touchez pour masquer les commandes',
-                  style: text.bodySmall?.copyWith(color: Colors.white70),
+                  style: text.bodySmall?.copyWith(color: c.textSecondary),
                 ),
               ],
             ),
@@ -301,7 +325,13 @@ class _GestureHintState extends State<_GestureHint> {
   }
 }
 
-Future<void> _showInfo(BuildContext context, Panorama p) async {
+/// Feuille d'infos, affichée avec le thème de l'app [appTheme] (et non le
+/// thème sombre forcé des commandes posées sur la photo).
+Future<void> _showInfo(
+  BuildContext context,
+  Panorama p,
+  ThemeData appTheme,
+) async {
   final file = File(p.stitchedImagePath);
   final size = file.existsSync() ? file.lengthSync() : 0;
   // Dimensions lues dans l'en-tête de l'image, sans la décoder entièrement.
@@ -315,43 +345,46 @@ Future<void> _showInfo(BuildContext context, Panorama p) async {
   } catch (_) {}
   if (!context.mounted) return;
 
-  final text = Theme.of(context).textTheme;
-  final c = context.colors;
+  final text = appTheme.textTheme;
+  final c = appTheme.extension<ConstellationColors>()!;
   await showModalBottomSheet<void>(
     context: context,
     useSafeArea: true,
-    builder: (context) => Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      child: GlassPanel(
-        tint: c.backgroundElevated.withValues(alpha: 0.85),
-        padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Informations', style: text.headlineSmall),
-            const SizedBox(height: 20),
-            _InfoRow(
-              icon: Icons.event_rounded,
-              label: 'Créée le',
-              value: Formatters.dateTime(p.createdAt),
-            ),
-            _InfoRow(
-              icon: Icons.aspect_ratio_rounded,
-              label: 'Définition',
-              value: dims,
-            ),
-            _InfoRow(
-              icon: Icons.sd_storage_rounded,
-              label: 'Taille',
-              value: Formatters.bytes(size),
-            ),
-            _InfoRow(
-              icon: Icons.public_rounded,
-              label: 'Projection',
-              value: 'Équirectangulaire 360° · Photo Sphere',
-            ),
-          ],
+    builder: (context) => Theme(
+      data: appTheme,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: GlassPanel(
+          tint: c.backgroundElevated.withValues(alpha: 0.85),
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Informations', style: text.headlineSmall),
+              const SizedBox(height: 20),
+              _InfoRow(
+                icon: Icons.event_rounded,
+                label: 'Créée le',
+                value: Formatters.dateTime(p.createdAt),
+              ),
+              _InfoRow(
+                icon: Icons.aspect_ratio_rounded,
+                label: 'Définition',
+                value: dims,
+              ),
+              _InfoRow(
+                icon: Icons.sd_storage_rounded,
+                label: 'Taille',
+                value: Formatters.bytes(size),
+              ),
+              _InfoRow(
+                icon: Icons.public_rounded,
+                label: 'Projection',
+                value: 'Équirectangulaire 360° · Photo Sphere',
+              ),
+            ],
+          ),
         ),
       ),
     ),
