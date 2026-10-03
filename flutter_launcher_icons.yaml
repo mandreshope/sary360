@@ -1,0 +1,16 @@
+# Icônes de l'application (thème « Constellation »).
+# Images sources : flutter test tool/icon/render_icon_test.dart
+# Génération     : dart run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: "assets/icon/icon.png"
+  android: "ic_launcher"
+  min_sdk_android: 26
+  # Icône adaptative : fond nuit + sphère au premier plan.
+  adaptive_icon_background: "#07080C"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  # Icônes à thème (Android 13+).
+  adaptive_icon_monochrome: "assets/icon/icon_monochrome.png"
+  ios: true
+  # L'App Store refuse la transparence.
+  remove_alpha_ios: true
+  background_color_ios: "#07080C"
