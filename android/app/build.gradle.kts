@@ -17,6 +17,16 @@ val opencvSdkDir: String = localProperties.getProperty("opencv.dir")
     ?: System.getenv("OPENCV_ANDROID_SDK")
     ?: rootProject.file("../third_party/OpenCV-android-sdk").absolutePath
 
+// Signature de la release : android/key.properties (non versionné) avec
+// storePassword, keyPassword, keyAlias et storeFile (relatif à android/app,
+// ex. ../key.jks pour android/key.jks). Sans ce fichier, la release est
+// signée avec la clé de debug.
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("key.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
+
 android {
     namespace = "com.mandreshope.sary360"
     compileSdk = 36
@@ -70,11 +80,25 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn("android/key.properties absent : release signée avec la clé de debug")
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

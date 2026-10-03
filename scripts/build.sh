@@ -136,9 +136,17 @@ check_opencv_sdk() {
 
 if [ "$PLATFORM" = "android" ] || [ "$PLATFORM" = "all" ]; then
     check_opencv_sdk
-    if grep -q 'signingConfigs.getByName("debug")' android/app/build.gradle.kts; then
-        echo -e "${YELLOW}⚠️  La release Android est signée avec la clé de debug${NC}"
-        echo -e "${YELLOW}   (android/app/build.gradle.kts) : à remplacer avant une publication.${NC}"
+    # Signature : android/key.properties + keystore (voir README).
+    if [ -f "android/key.properties" ]; then
+        store_file=$(grep -E '^storeFile=' android/key.properties | cut -d= -f2- || true)
+        if [ -z "$store_file" ] || { [ ! -f "android/app/${store_file}" ] && [ ! -f "$store_file" ]; }; then
+            echo -e "${RED}❌ Keystore introuvable : storeFile=${store_file} (relatif à android/app).${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ Signature release : android/key.properties (${store_file})${NC}"
+    else
+        echo -e "${YELLOW}⚠️  android/key.properties absent : la release sera signée avec la clé${NC}"
+        echo -e "${YELLOW}   de debug (non publiable sur le Play Store).${NC}"
     fi
 fi
 if [ "$PLATFORM" = "ios" ] || [ "$PLATFORM" = "all" ]; then
