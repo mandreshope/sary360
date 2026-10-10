@@ -89,6 +89,13 @@ gyroscope drift) → focal self-calibration → sharp photos take seam priority 
 SphericalWarper, BlocksGain, GraphCut (0.05 Mpx), MultiBand → blurred hole
 filling → JPEG, then XMP on the Dart side.
 
+Floor eraser (manual, from the viewer's "Sol" button): `sary_erase_nadir`
+unfolds the nadir into a 512 × 512 top-down view, fills a disc of the chosen
+radius with the **MI-GAN 512 generator** (`assets/models/`, MIT, 27 MB) run by
+OpenCV `dnn`, and projects it back (~1.6 s). `NadirEraserService` keeps the
+original in `panoramas/originals/` for "Restaurer l'original". It is never
+applied automatically: on scenes without feet it replaces real objects.
+
 Things to know:
 - `rotations` = OpenCV camera (x right, y down, z forward) → OpenCV world
   (y down, z = panorama center). Conversions and tests:
@@ -123,6 +130,8 @@ Things to know:
   `ios/Runner.xcodeproj/project.pbxproj`: revert that change.
 - zsh: `for f in $VAR` does not split the variable (use `${=VAR}`), and an
   unmatched `*` glob makes the command fail (prefer `find … -exec`).
+- `--split-per-abi` fails if `ndk.abiFilters` is set: the Gradle script only
+  sets it when the `split-per-abi` property is absent.
 - App files on the device: `adb exec-out run-as com.mandreshope.sary360 cat <path>`
   (photos in `cache/temp/`, panoramas in `app_flutter/panoramas/`).
 
@@ -154,5 +163,6 @@ Things to know:
 6. ⏳ Gallery and viewer redesigned; "little planet" mode remaining.
 7. ⏳ Polish, tests, full README, fonts bundled for offline use.
 
-Next ideas: AI nadir inpainting (MI-GAN via ONNX Runtime) to remove the
-user's feet, XFeat keypoints instead of ORB for low-texture walls.
+Next ideas: XFeat keypoints instead of ORB for low-texture walls (could also
+run through OpenCV `dnn`), automatic feet detection to suggest the floor
+eraser.
