@@ -14,6 +14,7 @@ import '../../data/services/gallery_export_service.dart';
 import '../../domain/models/panorama.dart';
 import '../providers/settings_providers.dart';
 import '../widgets/custom_panorama.dart' as pw;
+import '../widgets/viewer/nadir_eraser_sheet.dart';
 import 'gallery_page.dart' show kThumbnailCacheWidth, panoramaHeroTag;
 
 /// Visionneuse immersive : glisser pour tourner, pincer pour zoomer,
@@ -99,6 +100,21 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
     }
   }
 
+  /// Opens the floor eraser; reloads the sphere when the file changed.
+  Future<void> _eraseFloor(ThemeData appTheme) async {
+    HapticFeedback.selectionClick();
+    final changed = await showNadirEraserSheet(
+      context,
+      widget.panorama,
+      appTheme,
+    );
+    if (!changed || !mounted) return;
+    final file = File(widget.panorama.stitchedImagePath);
+    await FileImage(file).evict();
+    await ResizeImage(FileImage(file), width: kThumbnailCacheWidth).evict();
+    if (mounted) setState(() => _viewKey++);
+  }
+
   void _toggleGyro() {
     HapticFeedback.selectionClick();
     setState(() => _gyro = !_gyro);
@@ -139,6 +155,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
             tag: panoramaHeroTag(widget.panorama),
             child: Image.file(
               file,
+              key: ValueKey(_viewKey),
               fit: BoxFit.cover,
               cacheWidth: kThumbnailCacheWidth,
               gaplessPlayback: true,
@@ -166,6 +183,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
             exporting: _exporting,
             onExport: _exportToGallery,
             onRecenter: _recenter,
+            onEraseFloor: () => _eraseFloor(appTheme),
             appTheme: appTheme,
           ),
           const _GestureHint(),
@@ -185,6 +203,7 @@ class _Chrome extends StatelessWidget {
     required this.exporting,
     required this.onExport,
     required this.onRecenter,
+    required this.onEraseFloor,
     required this.appTheme,
   });
 
@@ -195,6 +214,7 @@ class _Chrome extends StatelessWidget {
   final bool exporting;
   final VoidCallback onExport;
   final VoidCallback onRecenter;
+  final VoidCallback onEraseFloor;
   final ThemeData appTheme;
 
   @override
@@ -235,6 +255,12 @@ class _Chrome extends StatelessWidget {
                         ),
                       ),
                     ),
+                    const SizedBox(width: 12),
+                    GlassIconButton(
+                      icon: Icons.info_outline_rounded,
+                      tooltip: 'Infos',
+                      onPressed: () => _showInfo(context, panorama, appTheme),
+                    ),
                   ],
                 ),
                 const Spacer(),
@@ -256,15 +282,15 @@ class _Chrome extends StatelessWidget {
                         onTap: onRecenter,
                       ),
                       _ToolButton(
+                        icon: Icons.auto_fix_high_rounded,
+                        label: 'Sol',
+                        onTap: onEraseFloor,
+                      ),
+                      _ToolButton(
                         icon: Icons.download_rounded,
                         label: 'Exporter',
                         busy: exporting,
                         onTap: onExport,
-                      ),
-                      _ToolButton(
-                        icon: Icons.info_outline_rounded,
-                        label: 'Infos',
-                        onTap: () => _showInfo(context, panorama, appTheme),
                       ),
                     ],
                   ),

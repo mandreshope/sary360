@@ -27,7 +27,7 @@ class PanoramaRepository {
         Panorama(
           id: f.uri.pathSegments.last,
           name: f.uri.pathSegments.last,
-          createdAt: f.lastModifiedSync(),
+          createdAt: _createdAt(f),
           stitchedImagePath: f.path,
           originalPhotoPaths: const [],
           photoCount: 0,
@@ -37,10 +37,25 @@ class PanoramaRepository {
     return panoramas;
   }
 
+  /// Capture date from the file name (`panorama_<epoch ms>.jpg`), which stays
+  /// stable when the image is edited; file date as a fallback.
+  static DateTime _createdAt(File f) {
+    final match = RegExp(r'panorama_(\d+)\.jpg$').firstMatch(f.path);
+    final ms = match == null ? null : int.tryParse(match.group(1)!);
+    return ms == null
+        ? f.lastModifiedSync()
+        : DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
   /// Supprime le fichier et ses entrées du cache d'images.
   Future<void> delete(Panorama panorama) async {
     final file = File(panorama.stitchedImagePath);
     await FileImage(file).evict();
     if (file.existsSync()) await file.delete();
+    // Unedited original kept by the nadir eraser, if any.
+    final original = File(
+      '${file.parent.path}/originals/${file.uri.pathSegments.last}',
+    );
+    if (original.existsSync()) await original.delete();
   }
 }

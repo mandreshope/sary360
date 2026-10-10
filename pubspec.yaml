@@ -84,6 +84,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  assets:
+    # MI-GAN inpainting model (nadir removal) and its MIT license notice.
+    - assets/models/migan_512_generator.onnx
+    - assets/models/MIGAN_LICENSE.txt
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

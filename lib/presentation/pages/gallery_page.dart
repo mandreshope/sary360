@@ -66,6 +66,8 @@ class _GalleryPageState extends State<GalleryPage>
   Future<void> _open(Panorama p) async {
     HapticFeedback.selectionClick();
     await context.push(AppRoutes.viewer, extra: p);
+    // The floor eraser may have edited the file: refresh the thumbnails.
+    if (mounted) setState(() {});
   }
 
   Future<void> _delete(Panorama p) async {
@@ -274,6 +276,8 @@ class _PanoramaCardState extends State<_PanoramaCard> {
     final p = widget.panorama;
     final file = File(p.stitchedImagePath);
     final size = file.existsSync() ? file.lengthSync() : 0;
+    // Read once per build, not in the 60 fps thumbnail animation.
+    final version = file.existsSync() ? file.lastModifiedSync() : null;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _pressed = true),
@@ -313,6 +317,8 @@ class _PanoramaCardState extends State<_PanoramaCard> {
                       final x = Curves.easeInOutSine.transform(t) * 2 - 1;
                       return Image.file(
                         file,
+                        // New key when the file changes (floor eraser).
+                        key: ValueKey(version),
                         fit: BoxFit.cover,
                         alignment: Alignment(x, 0),
                         cacheWidth: kThumbnailCacheWidth,

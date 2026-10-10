@@ -70,6 +70,13 @@ typedef struct SaryStitchParams {
   /// 0 : utiliser directement les rotations des capteurs.
   int32_t refine;
 
+  /// Nadir removal (feet, tripod, shadow): angular radius in degrees of the
+  /// disc around the nadir rebuilt by the inpainting model (<= 0: disabled).
+  float nadir_mask_deg;
+
+  /// Path of the MI-GAN 512 generator (ONNX), required when nadir_mask_deg > 0.
+  const char *inpaint_model_path;
+
   /// Chemin du JPEG équirectangulaire produit.
   const char *output_path;
 
@@ -105,6 +112,35 @@ typedef struct SaryStitchResult {
 /// Renvoie un code SARY_OK / SARY_ERR_*.
 SARY_EXPORT int32_t sary_stitch(const SaryStitchParams *params,
                                    SaryStitchResult *result);
+
+/// Parameters of a manual nadir removal on an existing panorama.
+typedef struct SaryNadirParams {
+  /// Equirectangular (2:1) JPEG to edit.
+  const char *input_path;
+
+  /// Edited JPEG (may equal input_path; XMP metadata is not preserved).
+  const char *output_path;
+
+  /// MI-GAN 512 generator (ONNX).
+  const char *model_path;
+
+  /// Angular radius in degrees of the disc rebuilt around the nadir (0..80).
+  float mask_deg;
+
+  /// JPEG quality (1-100).
+  int32_t jpeg_quality;
+
+  /// Optional 512 × 512 top-down previews of the floor before / after
+  /// (may be NULL).
+  const char *preview_before_path;
+  const char *preview_after_path;
+} SaryNadirParams;
+
+/// Rebuilds the floor around the nadir of a panorama (photographer's feet,
+/// tripod, shadow) with the MI-GAN inpainting model. Returns a SARY_* code;
+/// a message (UTF-8) is written to [message] when not NULL.
+SARY_EXPORT int32_t sary_erase_nadir(const SaryNadirParams *params, char *message,
+                                     int32_t message_size);
 
 /// Version d'OpenCV liée au module (chaîne statique).
 SARY_EXPORT const char *sary_opencv_version(void);
