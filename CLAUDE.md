@@ -47,8 +47,10 @@ native/stitcher/                 # module C++ : include/sary_stitcher.h, src/, t
 tool/icon/                       # dessin de l'icône (voir skill regenerate-app-icon)
 ```
 
-- État : **Riverpod** (`Notifier` pour le neuf ; `StateNotifier` subsiste dans
-  `capture_viewmodel.dart`). Navigation : **go_router**, chemins dans `AppRoutes`.
+- État : **Riverpod** (`Notifier`). La capture sépare l'état peu fréquent
+  (`CaptureState`) des mesures à ≈ 50 Hz (`CaptureController.frame`,
+  `ValueNotifier` écouté directement par le peintre). Navigation :
+  **go_router**, chemins dans `AppRoutes`.
 - Visionneuse 360° : `presentation/widgets/custom_panorama.dart` (fork local
   de `panorama` sur `flutter_cube`).
 
@@ -69,7 +71,9 @@ tool/icon/                       # dessin de l'icône (voir skill regenerate-app
 Pipeline `cv::detail` appelé via FFI dans un isolate (`stitching_service.dart`) :
 rotations des capteurs → ORB (seuil FAST 8, 3000 pts) sur les **voisines
 uniquement** → `BundleAdjusterRay` **par composante reliée**, conservé seulement
-s'il réduit l'écart des rayons appariés → auto-calibration de la focale →
+s'il réduit l'écart des rayons appariés → propagation des corrections aux
+photos non affinées (voisines dans l'ordre de capture : compense la dérive du
+gyroscope) → auto-calibration de la focale →
 priorité aux photos nettes → SphericalWarper, BlocksGain, GraphCut (0,05 Mpx),
 MultiBand → remplissage flou des trous → JPEG, puis XMP côté Dart.
 
@@ -79,12 +83,18 @@ Points à connaître :
 - Progression / annulation via deux cellules de mémoire native partagées
   (adresses passées à l'isolate). Pas d'`enum` ni de `volatile` dans l'en-tête
   C (ffigen) : codes `int32_t` `SARY_*`.
+- Chaque capture écrit `cache/temp/session.json` (quaternions réels, ordre de
+  capture) : `stitch_cli` rejoue alors l'assemblage à l'identique (skill
+  `test-stitcher-on-device`).
 - Journal Android : tag **`SaryStitcher`** (étapes, durées, groupes affinés) ;
   `SARY_DEBUG=1` (outil CLI) ajoute le détail par photo et par paire.
 - Ultra grand angle du Pixel 6a : champ réel **≈ 53° × 83°** en portrait
   (correction de distorsion de l'appareil), pas 62° × 94°. Grille ultra grand
   angle : 26 cibles (10 / 7 / 7 / 1 / 1) ; objectif principal : 42.
 - Le plugin `camera` ne capture qu'en **16:9** (tous les presets sont vidéo).
+  `takePicture` lance un autofocus (3 s d'expiration si la mise au point est
+  fixe) puis une mesure d'exposition (3 s si l'exposition est verrouillée) :
+  d'où mise au point verrouillée et exposition automatique.
 
 ## Pièges rencontrés
 
@@ -109,18 +119,20 @@ Points à connaître :
   aussi, en nettoyant après.
 - Commits uniquement sur demande, en commits thématiques, sur la branche de
   travail (pas `develop`). Style : `feat:` / `fix:` / `enhance:` / `chore:` +
-  résumé anglais, puis la ligne `Co-Authored-By`.
+  résumé anglais. **Pas de ligne `Co-Authored-By`** dans les messages.
 - `DOCUMENTATION.md`, `QUICK_START.md` et `ANDROID_SETUP.md` sont **obsolètes**
   (avant la refonte) ; le README est à jour pour l'installation et le module natif.
 
 ## Avancement (cahier des charges en 7 étapes)
 
 1. ✅ Structure, thème, navigation, onboarding.
-2. ⏳ Platform channel `TYPE_ROTATION_VECTOR` (Kotlin) + écran de capture
-   « constellation » — l'orientation vient encore de `sensors_plus`
-   (accéléromètre + magnétomètre, cap bruité).
-3. ⏳ Capture automatique : verrouillage exposition / mise au point après la
-   1re photo (aujourd'hui ~3 s d'autofocus par photo → flou de bougé).
+2. ✅ Orientation : `OrientationStreamHandler.kt` (EventChannel `sary360/orientation`,
+   GAME_ROTATION_VECTOR sinon ROTATION_VECTOR) derrière `OrientationSource`
+   (repli `sensors_plus` sur iOS). Écran de capture « constellation »
+   (`ConstellationPainter`, `CaptureSession`).
+3. ✅ Capture automatique : distance angulaire au réticule, immobilité 300 ms,
+   quaternion moyen enregistré. Mise au point verrouillée après la 1re photo ;
+   exposition **non** verrouillée (le plugin `camera` attendrait 3 s par photo).
 4. ✅ Module C++ OpenCV + FFI + isolate.
 5. ⏳ Export JPEG + XMP GPano conforme (APP1 aujourd'hui inséré avant APP0),
    partage natif. Export galerie fait (`gal`).

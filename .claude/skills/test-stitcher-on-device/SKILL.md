@@ -44,9 +44,12 @@ done
 
 ## 3. Générer la liste d'entrée
 
-Les quaternions ne sont pas sauvegardés sur disque : le script reconstruit les
-rotations à partir des angles des cibles (approximation : le cap réel peut
-s'en écarter de 10 à 30°, l'affinage par points-clés le corrige).
+Si `session.json` a été récupéré avec les photos (écrit par l'app à la fin
+de chaque capture), le script utilise les **quaternions réellement mesurés**
+et l'ordre de capture : l'assemblage est identique à celui de l'app. Sinon
+(anciennes sessions), il reconstruit les rotations à partir des angles des
+cibles — approximation trompeuse pour comparer deux versions (cap arbitraire
+aux pôles).
 
 ```bash
 python3 .claude/skills/test-stitcher-on-device/scripts/make_list.py $S/session \
@@ -95,5 +98,10 @@ par photo.
 adb -s $D shell "rm -rf /data/local/tmp/sary"
 ```
 
-Attention zsh : `for f in $VAR` ne découpe pas une variable ; utiliser une
-substitution de commande comme ci-dessus ou `${=VAR}`.
+Attention zsh : `for f in $VAR` ne découpe pas une variable (utiliser une
+substitution de commande ou `${=VAR}`), et un motif `*` sans correspondance
+fait échouer la commande (préférer `find … -exec`).
+
+Pour comparer deux versions du module, compiler la version de référence dans
+un autre dossier (`git show HEAD:native/stitcher/src/sary_stitcher.cpp` dans
+une copie de `native/stitcher`) et lancer les deux sur la même liste.
