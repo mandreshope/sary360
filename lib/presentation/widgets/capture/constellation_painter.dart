@@ -122,11 +122,14 @@ class ConstellationPainter extends CustomPainter {
         Float32List.fromList(positions),
         textureCoordinates: Float32List.fromList(texcoords),
       );
+      // Filtered with mipmaps: without it the texture is sampled with
+      // nearest-neighbor and looks pixelated once stretched.
       paint.shader = ImageShader(
         image,
         TileMode.clamp,
         TileMode.clamp,
         Matrix4.identity().storage,
+        filterQuality: FilterQuality.medium,
       );
       canvas.drawVertices(vertices, BlendMode.srcOver, paint);
       vertices.dispose();

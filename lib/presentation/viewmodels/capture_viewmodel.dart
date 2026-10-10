@@ -117,6 +117,9 @@ class CaptureController extends AutoDisposeNotifier<CaptureState> {
   static const double enterToleranceDeg = 5;
   static const double keepToleranceDeg = 7;
 
+  /// Decoding width of the photos drawn on the sphere during capture.
+  static const int thumbnailWidth = 480;
+
   /// Seuils d'alerte.
   static const double tooFastDegPerSec = 60;
   static const double maxRollDeg = 15;
@@ -311,7 +314,12 @@ class CaptureController extends AutoDisposeNotifier<CaptureState> {
   Future<void> _loadThumbnail(int index, File file) async {
     try {
       final bytes = await file.readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 160);
+      // Projected on the sphere, a photo spans almost the whole screen
+      // width: 480 px keeps it sharp for ~1.2 MB of texture per photo.
+      final codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: thumbnailWidth,
+      );
       final image = (await codec.getNextFrame()).image;
       codec.dispose();
       if (_disposed || !photos.containsKey(index)) {
