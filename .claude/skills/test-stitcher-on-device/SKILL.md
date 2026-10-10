@@ -1,18 +1,19 @@
 ---
 name: test-stitcher-on-device
-description: Tester le module C++ d'assemblage (native/stitcher) sur le téléphone Android branché, hors de l'app, avec les photos de la dernière capture. À utiliser après une modification de sary_stitcher.cpp, pour mesurer les durées, régler un paramètre ou juger la qualité d'un panorama sans réinstaller l'app.
+description: Test the C++ stitching module (native/stitcher) on the connected Android phone, outside the app, with the photos of the latest capture. Use after changing sary_stitcher.cpp to measure timings, tune a parameter, compare two versions or judge panorama quality without reinstalling the app.
 ---
 
-# Tester l'assemblage natif sur l'appareil
+# Test native stitching on the device
 
-Compile `stitch_cli` + `libsary_stitcher.so` avec le NDK, les pousse dans
-`/data/local/tmp/sary` avec les photos de la dernière session, lance
-l'assemblage et récupère le panorama. L'app n'est ni réinstallée ni lancée.
+Builds `stitch_cli` + `libsary_stitcher.so` with the NDK, pushes them to
+`/data/local/tmp/sary` together with the latest session's photos, runs the
+stitching and pulls the panorama back. The app is neither reinstalled nor
+launched.
 
-Les chemins ci-dessous supposent la racine du projet comme dossier courant et
-`$S` = dossier temporaire de travail (scratchpad).
+Paths below assume the project root as working directory and `$S` = a
+temporary working folder (scratchpad).
 
-## 1. Compiler pour arm64
+## 1. Build for arm64
 
 ```bash
 SDK=/Volumes/BarraCudaQ5/Developer/Android/SDK
@@ -27,12 +28,13 @@ $CM/cmake -S native/stitcher -B $B -G Ninja -DCMAKE_MAKE_PROGRAM=$CM/ninja \
 $CM/ninja -C $B
 ```
 
-Les recompilations suivantes : `$CM/ninja -C $B` suffit.
+Later rebuilds: `$CM/ninja -C $B` is enough.
 
-## 2. Récupérer les photos de la dernière session
+## 2. Fetch the latest session's photos
 
-Les photos sont dans le cache de l'app (`cache/temp/`). Passer par le Mac :
-un tuyau `run-as … | adb shell "cat > …"` s'arrête après le premier fichier.
+Photos live in the app cache (`cache/temp/`), next to `session.json`. Go
+through the Mac: a `run-as … | adb shell "cat > …"` pipe stops after the first
+file.
 
 ```bash
 D=$(adb devices | awk 'NR==2{print $1}')
@@ -42,29 +44,28 @@ for f in $(adb -s $D shell "run-as com.mandreshope.sary360 ls cache/temp" | tr -
 done
 ```
 
-## 3. Générer la liste d'entrée
+## 3. Generate the input list
 
-Si `session.json` a été récupéré avec les photos (écrit par l'app à la fin
-de chaque capture), le script utilise les **quaternions réellement mesurés**
-et l'ordre de capture : l'assemblage est identique à celui de l'app. Sinon
-(anciennes sessions), il reconstruit les rotations à partir des angles des
-cibles — approximation trompeuse pour comparer deux versions (cap arbitraire
-aux pôles).
+When `session.json` was fetched with the photos (written by the app at the
+end of each capture), the script uses the **actually measured quaternions**
+and the capture order: the stitching is identical to the app's. Otherwise
+(older sessions) it rebuilds rotations from the target angles — a misleading
+approximation when comparing two versions (arbitrary heading at the poles).
 
 ```bash
 python3 .claude/skills/test-stitcher-on-device/scripts/make_list.py $S/session \
-  --grid wide > $S/list.txt          # --grid standard pour l'objectif principal
+  --grid wide > $S/list.txt          # --grid standard for the main lens
 ```
 
-Options : `--hfov`, `--width 8192`, `--refine 0` (rotations seules, sans
+Options: `--hfov`, `--width 8192`, `--refine 0` (sensor rotations only, no
 bundle adjustment), `--count`.
 
-## 4. Pousser, lancer, récupérer
+## 4. Push, run, pull
 
 ```bash
 adb -s $D shell "mkdir -p /data/local/tmp/sary/photos"
-mkdir -p $S/push && rm -f $S/push/*
-for f in $(awk 'NR>1{n=split($1,a,"/"); print a[n]}' $S/list.txt); do cp $S/session/$f $S/push/; done
+rm -rf $S/push && mkdir $S/push
+find $S/session -name "*.jpg" -exec cp {} $S/push/ \;
 adb -s $D push $S/push/. /data/local/tmp/sary/photos/
 adb -s $D push $B/stitch_cli $B/libsary_stitcher.so \
   $NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
@@ -73,35 +74,45 @@ adb -s $D logcat -c
 adb -s $D shell "cd /data/local/tmp/sary && SARY_DEBUG=1 LD_LIBRARY_PATH=. ./stitch_cli list.txt"
 adb -s $D logcat -d -s SaryStitcher | sed 's/.*SaryStitcher: //'
 adb -s $D pull /data/local/tmp/sary/pano.jpg $S/pano.jpg
-sips -Z 1600 $S/pano.jpg --out $S/pano_small.jpg   # pour l'afficher avec Read
+sips -Z 1600 $S/pano.jpg --out $S/pano_small.jpg   # to view it with Read
 ```
 
-Réglages surchargeables par variables d'environnement de `stitch_cli` :
-`SARY_WORK_MP`, `SARY_SEAM_MP`, `SARY_FEATURES`. `SARY_DEBUG=1` journalise
-points-clés et confiance par paire, netteté relative, corrections et focales
-par photo.
+`stitch_cli` settings overridable through environment variables:
+`SARY_WORK_MP`, `SARY_SEAM_MP`, `SARY_FEATURES`, `SARY_NEIGHBOR` (neighbor
+angle, default 68° = (hFov + vFov) / 2 for the ultra-wide lens).
+`SARY_DEBUG=1` logs per-pair keypoints and confidence, relative sharpness,
+per-photo corrections and focals.
 
-## 5. Lire le résultat
+## 5. Read the result
 
-- `paires candidates / fiables` : peu de paires fiables = recouvrement ou
-  texture insuffisants.
-- `groupe de N photos : écart des rayons A° → B°` : l'affinage est retenu
-  s'il réduit nettement l'écart (≤ 80 %, ≤ 2°).
-- `focale médiane des photos affinées` vs `théorique` : un écart > 5 % indique
-  un champ de vision mal estimé dans `AppConstants`.
-- Comparer des recadrages à pleine résolution (`sips -c H W --cropOffset Y X`)
-  pour juger raccords et netteté.
+The module's log lines are currently in French:
+- `paires candidates / fiables` (candidate / reliable pairs): few reliable
+  pairs = not enough overlap or texture.
+- `groupe de N photos : écart des rayons A° → B°` (group of N photos: ray
+  error before → after): refinement is kept if it clearly reduces the error
+  (≤ 80 %, ≤ 2°).
+- `photos non affinées corrigées par leurs voisines`: unrefined photos that
+  received their neighbors' correction (gyroscope drift).
+- `focale médiane des photos affinées` vs `théorique` (refined median focal vs
+  theoretical): a gap > 5 % means the field of view in `AppConstants` is off.
+- Compare full-resolution crops (`sips -c H W --cropOffset Y X`) to judge
+  seams and sharpness.
 
-## 6. Nettoyer
+The phone heats up: check `adb shell dumpsys thermalservice | grep "Thermal
+Status"` before comparing timings (status ≥ 2 slows everything 2–3×).
+
+## 6. Compare two versions
+
+Build the reference version in another folder (copy `native/stitcher`, then
+`git show HEAD:native/stitcher/src/sary_stitcher.cpp > <copy>/src/sary_stitcher.cpp`),
+push both binaries into separate subfolders and run them on the same list.
+
+## 7. Clean up
 
 ```bash
 adb -s $D shell "rm -rf /data/local/tmp/sary"
 ```
 
-Attention zsh : `for f in $VAR` ne découpe pas une variable (utiliser une
-substitution de commande ou `${=VAR}`), et un motif `*` sans correspondance
-fait échouer la commande (préférer `find … -exec`).
-
-Pour comparer deux versions du module, compiler la version de référence dans
-un autre dossier (`git show HEAD:native/stitcher/src/sary_stitcher.cpp` dans
-une copie de `native/stitcher`) et lancer les deux sur la même liste.
+zsh caveats: `for f in $VAR` does not split a variable (use command
+substitution or `${=VAR}`), and an unmatched `*` glob makes the command fail
+(prefer `find … -exec`).

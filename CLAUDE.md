@@ -1,140 +1,158 @@
 # Sary360
 
-Application Flutter de capture de **photos sphériques 360°** (type « Photo
-Sphere ») : l'utilisateur tourne sur lui-même, l'app déclenche une photo à
-chaque cible de la sphère, puis un module C++ OpenCV assemble une image
-équirectangulaire 2:1 avec métadonnées XMP GPano. Thème visuel :
-**« Constellation »** (capturer = compléter une carte du ciel).
+Flutter app that captures **360° spherical photos** ("Photo Sphere" style):
+the user turns on the spot, the app takes a photo at each target of the
+sphere, then a C++ OpenCV module stitches a 2:1 equirectangular image with
+GPano XMP metadata. Visual theme: **"Constellation"** (capturing = completing
+a star map).
 
-Langue du projet : **français** (commentaires, textes de l'UI, échanges).
-Messages de commit en anglais.
+## Language rules
 
-## Commandes
+- **All documentation and code comments are written in English**: CLAUDE.md,
+  skills, README and docs, Dart / Kotlin / C++ / Python comments and doc
+  comments, commit messages.
+- **User-facing UI text stays in French** (the app targets French speakers).
+- Many existing comments are still in French: translate them to English when
+  you touch the surrounding code.
+- Conversation with the user: French.
 
-Flutter est fixé à **3.47.5** (`.fvmrc`, FVM).
+## Commands
+
+Flutter is pinned to **3.47.5** (`.fvmrc`, FVM).
 
 ```bash
 flutter pub get
-flutter analyze                 # doit rester à « No issues found! »
-flutter test                    # tourne directement sur macOS
-flutter build apk --debug       # compile aussi le module natif (3 ABI)
-dart run ffigen --config ffigen.yaml   # après modification de sary_stitcher.h
+flutter analyze                 # must stay at "No issues found!"
+flutter test                    # runs directly on macOS
+flutter build apk --debug       # also builds the native module (3 ABIs)
+dart run ffigen --config ffigen.yaml   # after changing sary_stitcher.h
+./scripts/build.sh              # release builds (APK, per-ABI APK, AAB, IPA)
 ```
 
-Prérequis Android : NDK 28, CMake 3.22.1, **OpenCV Android SDK 4.13.0** dans
-`third_party/OpenCV-android-sdk` (ignoré par git ; sinon `opencv.dir` dans
-`android/local.properties` ou `OPENCV_ANDROID_SDK`). Procédure : README.
+Android prerequisites: NDK 28, CMake 3.22.1, **OpenCV Android SDK 4.13.0** in
+`third_party/OpenCV-android-sdk` (git-ignored; otherwise `opencv.dir` in
+`android/local.properties` or `OPENCV_ANDROID_SDK`). Procedure: README.
+Release signing: `android/key.properties` + `android/key.jks` (git-ignored).
 
 ## Architecture
 
 ```
 lib/
-├── app.dart, main.dart          # MaterialApp.router, thème, ProviderScope
+├── app.dart, main.dart          # MaterialApp.router, theme, ProviderScope
 ├── core/
-│   ├── constants/               # AppConstants, CaptureGrid (grilles de cibles)
-│   ├── math/                    # Vec3, Quaternion, CameraRotation (repères)
-│   ├── router/                  # go_router (AppRoutes), redirection onboarding
+│   ├── constants/               # AppConstants, CaptureGrid (target grids)
+│   ├── math/                    # Vec3, Quaternion, CameraRotation, ScreenProjection
+│   ├── router/                  # go_router (AppRoutes), onboarding redirect
 │   ├── theme/                   # ConstellationColors (ThemeExtension), AppTheme
-│   ├── utils/formatters.dart    # dates / tailles en français
+│   ├── utils/formatters.dart    # French dates / sizes for the UI
 │   └── widgets/                 # GlassPanel, StarfieldBackground, ConstellationOrb
-├── domain/                      # modèles (CapturedPhoto, Panorama, AppSettings) + interfaces
+├── domain/                      # models, CaptureSession, interfaces (OrientationSource…)
 ├── data/
-│   ├── native/                  # bindings FFI générés (ne pas éditer)
-│   ├── repositories/            # réglages (SharedPreferences), sphères (fichiers)
-│   └── services/                # caméra/capteurs, assemblage (isolate + FFI), export galerie
-└── presentation/                # pages, viewmodels, providers Riverpod, widgets
-native/stitcher/                 # module C++ : include/sary_stitcher.h, src/, tools/stitch_cli.cpp
-tool/icon/                       # dessin de l'icône (voir skill regenerate-app-icon)
+│   ├── native/                  # generated FFI bindings (do not edit)
+│   ├── repositories/            # settings (SharedPreferences), panoramas (files)
+│   ├── sensors/                 # orientation sources (rotation vector, raw sensors)
+│   └── services/                # camera, stitching (isolate + FFI), gallery export
+└── presentation/                # pages, viewmodels, Riverpod providers, widgets
+native/stitcher/                 # C++ module: include/sary_stitcher.h, src/, tools/stitch_cli.cpp
+android/.../OrientationStreamHandler.kt  # EventChannel sary360/orientation
+tool/icon/                       # icon drawing (see skill regenerate-app-icon)
 ```
 
-- État : **Riverpod** (`Notifier`). La capture sépare l'état peu fréquent
-  (`CaptureState`) des mesures à ≈ 50 Hz (`CaptureController.frame`,
-  `ValueNotifier` écouté directement par le peintre). Navigation :
-  **go_router**, chemins dans `AppRoutes`.
-- Visionneuse 360° : `presentation/widgets/custom_panorama.dart` (fork local
-  de `panorama` sur `flutter_cube`).
+- State: **Riverpod** (`Notifier`). Capture separates low-frequency state
+  (`CaptureState`) from ~50 Hz measurements (`CaptureController.frame`, a
+  `ValueNotifier` listened to directly by the painter). Navigation:
+  **go_router**, paths in `AppRoutes`.
+- 360° viewer: `presentation/widgets/custom_panorama.dart` (local fork of
+  `panorama` on top of `flutter_cube`).
 
-## Conventions d'interface
+## UI conventions
 
-- Couleurs : toujours via `context.colors` (`ConstellationColors`), jamais de
-  couleur en dur. Rayons `AppRadii`, durées/courbes `AppMotion`.
-- Surfaces flottantes : `GlassPanel` / `GlassIconButton`. Fonds : `StarfieldBackground`.
-- Polices : Space Grotesk (titres) / Manrope (texte) via google_fonts ;
-  `AppTheme.useGoogleFonts = false` dans les tests de widgets.
-- La visionneuse force le thème sombre (commandes posées sur la photo), mais
-  la feuille d'infos suit le thème de l'app.
-- Animations en boucle : utiliser `pump(durée)` dans les tests, jamais
-  `pumpAndSettle` (ne se termine pas).
+- Colors: always through `context.colors` (`ConstellationColors`), never
+  hard-coded. Radii `AppRadii`, durations/curves `AppMotion`.
+- Floating surfaces: `GlassPanel` / `GlassIconButton`. Backgrounds:
+  `StarfieldBackground`.
+- Fonts: Space Grotesk (titles) / Manrope (body) via google_fonts;
+  `AppTheme.useGoogleFonts = false` in widget tests.
+- The viewer forces the dark theme (controls sit on the photo), but its info
+  sheet follows the app theme.
+- Looping animations: use `pump(duration)` in tests, never `pumpAndSettle`
+  (it never settles).
 
-## Module natif d'assemblage (native/stitcher)
+## Native stitching module (native/stitcher)
 
-Pipeline `cv::detail` appelé via FFI dans un isolate (`stitching_service.dart`) :
-rotations des capteurs → ORB (seuil FAST 8, 3000 pts) sur les **voisines
-uniquement** → `BundleAdjusterRay` **par composante reliée**, conservé seulement
-s'il réduit l'écart des rayons appariés → propagation des corrections aux
-photos non affinées (voisines dans l'ordre de capture : compense la dérive du
-gyroscope) → auto-calibration de la focale →
-priorité aux photos nettes → SphericalWarper, BlocksGain, GraphCut (0,05 Mpx),
-MultiBand → remplissage flou des trous → JPEG, puis XMP côté Dart.
+`cv::detail` pipeline called through FFI inside an isolate
+(`stitching_service.dart`): sensor rotations → ORB (FAST threshold 8, 3000
+keypoints) on **neighbors only** → `BundleAdjusterRay` **per connected
+component**, kept only if it reduces the matched-ray error → corrections
+propagated to unrefined photos (neighbors in capture order, compensating
+gyroscope drift) → focal self-calibration → sharp photos take seam priority →
+SphericalWarper, BlocksGain, GraphCut (0.05 Mpx), MultiBand → blurred hole
+filling → JPEG, then XMP on the Dart side.
 
-Points à connaître :
-- `rotations` = caméra OpenCV (x droite, y bas, z visée) → monde OpenCV
-  (y bas, z = centre du panorama). Conversions et tests : `core/math/camera_rotation.dart`.
-- Progression / annulation via deux cellules de mémoire native partagées
-  (adresses passées à l'isolate). Pas d'`enum` ni de `volatile` dans l'en-tête
-  C (ffigen) : codes `int32_t` `SARY_*`.
-- Chaque capture écrit `cache/temp/session.json` (quaternions réels, ordre de
-  capture) : `stitch_cli` rejoue alors l'assemblage à l'identique (skill
+Things to know:
+- `rotations` = OpenCV camera (x right, y down, z forward) → OpenCV world
+  (y down, z = panorama center). Conversions and tests:
+  `core/math/camera_rotation.dart`.
+- Progress / cancellation through two shared native memory cells (addresses
+  passed to the isolate). No `enum` nor `volatile` in the C header (ffigen):
+  `int32_t` `SARY_*` codes.
+- Each capture writes `cache/temp/session.json` (measured quaternions, capture
+  order): `stitch_cli` then replays the stitching exactly (skill
   `test-stitcher-on-device`).
-- Journal Android : tag **`SaryStitcher`** (étapes, durées, groupes affinés) ;
-  `SARY_DEBUG=1` (outil CLI) ajoute le détail par photo et par paire.
-- Ultra grand angle du Pixel 6a : champ réel **≈ 53° × 83°** en portrait
-  (correction de distorsion de l'appareil), pas 62° × 94°. Grille ultra grand
-  angle : 26 cibles (10 / 7 / 7 / 1 / 1) ; objectif principal : 42.
-- Le plugin `camera` ne capture qu'en **16:9** (tous les presets sont vidéo).
-  `takePicture` lance un autofocus (3 s d'expiration si la mise au point est
-  fixe) puis une mesure d'exposition (3 s si l'exposition est verrouillée) :
-  d'où mise au point verrouillée et exposition automatique.
+- Android log tag **`SaryStitcher`** (stages, timings, refined groups);
+  `SARY_DEBUG=1` (CLI tool) adds per-photo and per-pair details.
+- Pixel 6a ultra-wide: real field of view **≈ 53° × 83°** in portrait (the
+  device's distortion correction crops it), not 62° × 94°. Ultra-wide grid:
+  26 targets (10 / 7 / 7 / 1 / 1); main lens: 42.
+- The `camera` plugin only captures **16:9** (all presets are video ones).
+  `takePicture` runs an autofocus (3 s timeout with a fixed-focus lens) then
+  an exposure metering (3 s if exposure is locked): hence focus locked and
+  exposure left on auto.
+- The app runs the phone hot: a thermal status ≥ 2 slows stitching 2–3×
+  (`adb shell dumpsys thermalservice`).
 
-## Pièges rencontrés
+## Known pitfalls
 
-- `Isolate.run(() => …)` dans une méthode d'instance capture tout le contexte
-  (callbacks → ViewModel → CameraController non envoyable) : créer la closure
-  dans une méthode **statique** qui ne voit que la requête.
-- `ImageInfo` reçus d'un `ImageStream` : les libérer (`dispose`) et retirer la
-  même instance d'écouteur ; sinon la visionneuse s'affichait en noir à la
-  réouverture.
-- `flutter_launcher_icons` remplace à tort
-  `ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS` dans
-  `ios/Runner.xcodeproj/project.pbxproj` : annuler ce changement.
-- Shell zsh : `for f in $VAR` ne découpe pas la variable (utiliser `${=VAR}`).
-- Fichiers de l'app sur l'appareil : `adb exec-out run-as com.mandreshope.sary360 cat <chemin>`
-  (photos dans `cache/temp/`, sphères dans `app_flutter/panoramas/`).
+- `Isolate.run(() => …)` inside an instance method captures the whole context
+  (callbacks → ViewModel → unsendable CameraController): create the closure in
+  a **static** method that only sees the request.
+- `ImageInfo` received from an `ImageStream`: dispose it and remove the same
+  listener instance; otherwise the viewer showed black when reopened.
+- `flutter_launcher_icons` wrongly rewrites
+  `ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS` in
+  `ios/Runner.xcodeproj/project.pbxproj`: revert that change.
+- zsh: `for f in $VAR` does not split the variable (use `${=VAR}`), and an
+  unmatched `*` glob makes the command fail (prefer `find … -exec`).
+- App files on the device: `adb exec-out run-as com.mandreshope.sary360 cat <path>`
+  (photos in `cache/temp/`, panoramas in `app_flutter/panoramas/`).
 
-## Façon de travailler
+## Working agreements
 
-- **Ne pas installer ni lancer l'app sur le téléphone sans demande** :
-  l'utilisateur teste lui-même. Lire les logs et fichiers de l'appareil
-  (lecture seule) est accepté ; l'outil `stitch_cli` dans `/data/local/tmp`
-  aussi, en nettoyant après.
-- Commits uniquement sur demande, en commits thématiques, sur la branche de
-  travail (pas `develop`). Style : `feat:` / `fix:` / `enhance:` / `chore:` +
-  résumé anglais. **Pas de ligne `Co-Authored-By`** dans les messages.
-- `DOCUMENTATION.md`, `QUICK_START.md` et `ANDROID_SETUP.md` sont **obsolètes**
-  (avant la refonte) ; le README est à jour pour l'installation et le module natif.
+- **Do not install or launch the app on the phone unless asked**: the user
+  tests it. Reading device logs and files (read-only) is fine, and so is the
+  `stitch_cli` tool in `/data/local/tmp` (clean up afterwards).
+- Commit only when asked, in thematic commits, on the working branch (not
+  `develop`). Style: `feat:` / `fix:` / `enhance:` / `chore:` / `docs:` +
+  English summary. **No `Co-Authored-By` line** (also disabled through
+  `attribution` in `.claude/settings.json`).
+- `DOCUMENTATION.md`, `QUICK_START.md` and `ANDROID_SETUP.md` are **obsolete**
+  (pre-redesign); the README is up to date for setup and the native module.
 
-## Avancement (cahier des charges en 7 étapes)
+## Progress (7-step specification)
 
-1. ✅ Structure, thème, navigation, onboarding.
-2. ✅ Orientation : `OrientationStreamHandler.kt` (EventChannel `sary360/orientation`,
-   GAME_ROTATION_VECTOR sinon ROTATION_VECTOR) derrière `OrientationSource`
-   (repli `sensors_plus` sur iOS). Écran de capture « constellation »
-   (`ConstellationPainter`, `CaptureSession`).
-3. ✅ Capture automatique : distance angulaire au réticule, immobilité 300 ms,
-   quaternion moyen enregistré. Mise au point verrouillée après la 1re photo ;
-   exposition **non** verrouillée (le plugin `camera` attendrait 3 s par photo).
-4. ✅ Module C++ OpenCV + FFI + isolate.
-5. ⏳ Export JPEG + XMP GPano conforme (APP1 aujourd'hui inséré avant APP0),
-   partage natif. Export galerie fait (`gal`).
-6. ⏳ Galerie et visionneuse refaites ; reste le mode « petite planète ».
-7. ⏳ Finitions, tests, README complet, polices embarquées hors ligne.
+1. ✅ Structure, theme, navigation, onboarding.
+2. ✅ Orientation: `OrientationStreamHandler.kt` (EventChannel
+   `sary360/orientation`, GAME_ROTATION_VECTOR else ROTATION_VECTOR) behind
+   `OrientationSource` (`sensors_plus` fallback on iOS). "Constellation"
+   capture screen (`ConstellationPainter`, `CaptureSession`).
+3. ✅ Auto capture: angular distance to the reticle, 300 ms stillness, averaged
+   quaternion stored. Focus locked after the first photo; exposure **not**
+   locked (the `camera` plugin would wait 3 s per photo).
+4. ✅ C++ OpenCV module + FFI + isolate.
+5. ⏳ Compliant JPEG + GPano XMP export (APP1 currently inserted before APP0),
+   native sharing. Gallery export done (`gal`).
+6. ⏳ Gallery and viewer redesigned; "little planet" mode remaining.
+7. ⏳ Polish, tests, full README, fonts bundled for offline use.
+
+Next ideas: AI nadir inpainting (MI-GAN via ONNX Runtime) to remove the
+user's feet, XFeat keypoints instead of ORB for low-texture walls.

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Génère la liste d'entrée de stitch_cli pour une session de capture.
+"""Generate stitch_cli's input list for a capture session.
 
-Si le dossier contient session.json (écrit par l'app à la fin de la
-capture), les rotations viennent des **quaternions réellement mesurés** et
-l'ordre de capture est respecté : l'assemblage est rejoué à l'identique.
+When the folder contains session.json (written by the app at the end of a
+capture), rotations come from the **actually measured quaternions** and the
+capture order is kept: the stitching is replayed exactly.
 
-Sinon (anciennes sessions), les rotations sont reconstruites à partir des
-angles des cibles de la grille (approximation : le cap réel peut s'en
-écarter). Grilles : garder en phase avec lib/core/constants/app_constants.dart.
+Otherwise (older sessions), rotations are rebuilt from the grid's target
+angles (approximation: the real heading may differ). Grids: keep in sync with
+lib/core/constants/app_constants.dart.
 
-Conversions : mêmes formules que CameraRotation.openCvCameraToWorld et
+Conversions: same formulas as CameraRotation.openCvCameraToWorld and
 recenterYaw (lib/core/math/camera_rotation.dart).
 
-Usage :
-  make_list.py <dossier_photos_local> [--grid wide|standard] [--count N]
+Usage:
+  make_list.py <local_photo_dir> [--grid wide|standard] [--count N]
                [--hfov 53] [--width 4096] [--refine 1]
                [--remote /data/local/tmp/sary] > list.txt
-Sans manifeste, la session retenue = les N photos les plus récentes.
+Without a manifest, the session = the N most recent photos.
 """
 import argparse
 import json
@@ -26,7 +26,7 @@ import re
 import sys
 
 GRIDS = {
-    # rangées : zénith, haute, horizon, basse, nadir
+    # rows: zenith, upper, horizon, lower, nadir
     "wide": ([85, 45, 0, -45, -85], [1, 7, 10, 7, 1], 53.0),
     "standard": ([75, 35, 0, -35, -75], [5, 10, 12, 10, 5], 40.0),
 }
@@ -63,7 +63,7 @@ def quaternion_matrix(q):
 
 
 def from_manifest(path):
-    """[(fichier, rotation caméra → monde OpenCV)], hfov, dans l'ordre de capture."""
+    """[(file, OpenCV camera → world rotation)], hfov, in capture order."""
     with open(path) as f:
         manifest = json.load(f)
     cam_to_device = [1, 0, 0, 0, -1, 0, 0, 0, -1]
@@ -99,17 +99,17 @@ def main():
         m = PATTERN.match(name)
         if m:
             photos.append((int(m.group(3)), int(m.group(1)), int(m.group(2)), name))
-    photos.sort()  # ordre de capture
+    photos.sort()  # capture order
     session = photos[-count:]
     if len(session) < count:
-        sys.exit(f"seulement {len(session)} photos trouvées, {count} attendues")
+        sys.exit(f"only {len(session)} photos found, {count} expected")
 
     entries = [(name, camera_to_world(r, i, elevations, per_row)) for _, r, i, name in session]
     print_list(entries, args.hfov or default_hfov, args)
 
 
 def print_list(entries, hfov, args):
-    # Recentrage : la première photo capturée au centre du panorama.
+    # Recenter: the first captured photo at the panorama center.
     first = entries[0][1]
     yaw = math.atan2(first[2], first[8])
     c, s = math.cos(-yaw), math.sin(-yaw)
