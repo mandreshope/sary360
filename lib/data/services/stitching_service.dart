@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
@@ -14,6 +13,7 @@ import '../../core/math/camera_rotation.dart';
 import '../../domain/models/captured_photo.dart';
 import '../../domain/models/panorama.dart';
 import '../native/sary_stitcher_bindings.g.dart';
+import 'photo_sphere_xmp.dart';
 
 /// Levée quand l'assemblage a été annulé par l'utilisateur.
 class StitchingCancelledException implements Exception {
@@ -146,9 +146,10 @@ class StitchingService {
         paths: [for (final p in photos) p.path],
         rotations: [for (final r in rotations) ...r],
         hFov: hFov,
-        // Au-delà, deux photos ne se chevauchent plus : inutile de les
-        // comparer.
-        neighborAngle: math.max(hFov, vFov) - 5,
+        // Au-delà, deux photos ne se recouvrent plus : inutile de les
+        // comparer (ex. ultra grand angle : 68°, alors que deux photos de
+        // l'horizon espacées de 72° ne se touchent pas).
+        neighborAngle: (hFov + vFov) / 2,
         outputWidth: outputWidth,
         outputPath: outputPath,
         progressAddress: progress.address,
@@ -250,6 +251,9 @@ class StitchingService {
         max_features: 3000,
         neighbor_max_angle_deg: req.neighborAngle,
         refine: 1,
+        // Nadir removal is a manual, per-panorama tool (NadirEraserService).
+        nadir_mask_deg: 0,
+        inpaint_model_path: ffi.nullptr,
         output_path: req.outputPath.toNativeUtf8(allocator: arena).cast(),
         progress: ffi.Pointer.fromAddress(req.progressAddress),
         cancel: ffi.Pointer.fromAddress(req.cancelAddress),
@@ -273,7 +277,7 @@ class StitchingService {
       final file = File(req.outputPath);
       final bytes = await file.readAsBytes();
       final width = req.outputWidth;
-      await file.writeAsBytes(_injectXmpMetadata(bytes, width, width ~/ 2));
+      await file.writeAsBytes(injectPhotoSphereXmp(bytes, width, width ~/ 2));
     }
     return response;
   }
@@ -297,52 +301,5 @@ class StitchingService {
         photoDir.deleteSync(recursive: true);
       }
     } catch (_) {}
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  MÉTADONNÉES XMP (Google Photo Sphere)
-  //  Injecte les tags nécessaires pour que Facebook / Google Photos
-  //  reconnaissent l'image comme un panorama 360° interactif.
-  // ═══════════════════════════════════════════════════════════════════
-
-  static List<int> _injectXmpMetadata(List<int> jpeg, int width, int height) {
-    const String xmpHeader = 'http://ns.adobe.com/xap/1.0/\x00';
-
-    final String xmpContent =
-        '''
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Sary360">
-  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about="" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">
-      <GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>
-      <GPano:CaptureSoftware>Sary360</GPano:CaptureSoftware>
-      <GPano:ProjectionType>equirectangular</GPano:ProjectionType>
-      <GPano:PoseHeadingDegrees>0.0</GPano:PoseHeadingDegrees>
-      <GPano:CroppedAreaLeftPixels>0</GPano:CroppedAreaLeftPixels>
-      <GPano:CroppedAreaTopPixels>0</GPano:CroppedAreaTopPixels>
-      <GPano:FullPanoWidthPixels>$width</GPano:FullPanoWidthPixels>
-      <GPano:FullPanoHeightPixels>$height</GPano:FullPanoHeightPixels>
-      <GPano:CroppedAreaImageWidthPixels>$width</GPano:CroppedAreaImageWidthPixels>
-      <GPano:CroppedAreaImageHeightPixels>$height</GPano:CroppedAreaImageHeightPixels>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>''';
-
-    final hdrBytes = xmpHeader.codeUnits;
-    final cntBytes = xmpContent.codeUnits;
-    final int len = 2 + hdrBytes.length + cntBytes.length;
-
-    final app1 = [
-      0xFF,
-      0xE1,
-      (len >> 8) & 0xFF,
-      len & 0xFF,
-      ...hdrBytes,
-      ...cntBytes,
-    ];
-
-    if (jpeg.length >= 2 && jpeg[0] == 0xFF && jpeg[1] == 0xD8) {
-      return [0xFF, 0xD8, ...app1, ...jpeg.sublist(2)];
-    }
-    return jpeg;
   }
 }

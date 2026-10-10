@@ -25,6 +25,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/ocl.hpp>
+#include <opencv2/dnn.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -319,6 +320,147 @@ void extractSubset(const std::vector<int>& indices,
       subPairs[a * m + b] = info;
     }
   }
+}
+
+/// Nadir removal with MI-GAN (ICCV 2023, Picsart AI Research, MIT license).
+///
+/// The bottom of the equirectangular image is heavily stretched, so the
+/// nadir is first unfolded into a 512 × 512 perspective view looking straight
+/// down, where the photographer's feet form a compact disc. That disc (plus
+/// any uncovered pixel in the view) is filled by the generator, then the view
+/// is projected back into the panorama with a feathered edge.
+///
+/// Generator I/O (see MI-GAN scripts/create_onnx_pipeline.py):
+///   input  1 × 4 × 512 × 512: [mask − 0.5, rgb · mask], rgb in [−1, 1],
+///          mask 1 = known, 0 = hole;
+///   output 1 × 3 × 512 × 512: rgb in [−1, 1].
+/// Returns false (panorama untouched) if the model cannot be run.
+bool inpaintNadir(Mat& pano, Mat& coverage, const std::string& modelPath, double maskDeg,
+                  Mat* previewBefore = nullptr, Mat* previewAfter = nullptr) {
+  constexpr int kSize = 512;
+  constexpr double kMarginDeg = 15.0;  // context kept around the hole
+  constexpr double kFeatherDeg = 4.0;  // blend width back into the panorama
+  const int width = pano.cols, height = pano.rows;
+  const double holeRad = maskDeg * kDeg;
+  const double halfFov = (maskDeg + kMarginDeg) * kDeg;
+  const double tanHalf = std::tan(halfFov);
+
+  // Equirectangular pixel of a world direction (OpenCV world, y down,
+  // z = panorama center), consistent with the spherical warper.
+  const auto toEquirect = [&](double x, double y, double z, float& px, float& py) {
+    const double lon = std::atan2(x, z);
+    const double theta = kPi - std::acos(std::min(1.0, std::max(-1.0, y)));
+    px = static_cast<float>((lon / (2 * kPi) + 0.5) * width - 0.5);
+    py = static_cast<float>(theta / kPi * height - 0.5);
+  };
+
+  // 1. Unfold the nadir: view pixel → panorama pixel. Tangent plane basis
+  //    (x, z) around the nadir direction (0, 1, 0).
+  Mat mapX(kSize, kSize, CV_32F), mapY(kSize, kSize, CV_32F);
+  Mat known(kSize, kSize, CV_8U);
+  for (int j = 0; j < kSize; ++j) {
+    for (int i = 0; i < kSize; ++i) {
+      const double a = (2.0 * (i + 0.5) / kSize - 1.0) * tanHalf;
+      const double b = (2.0 * (j + 0.5) / kSize - 1.0) * tanHalf;
+      const double n = std::sqrt(a * a + 1.0 + b * b);
+      toEquirect(a / n, 1.0 / n, b / n, mapX.at<float>(j, i), mapY.at<float>(j, i));
+      known.at<uchar>(j, i) = std::atan(std::sqrt(a * a + b * b)) < holeRad ? 0 : 255;
+    }
+  }
+  Mat view, viewCoverage;
+  cv::remap(pano, view, mapX, mapY, cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+  cv::remap(coverage, viewCoverage, mapX, mapY, cv::INTER_NEAREST, cv::BORDER_CONSTANT,
+            cv::Scalar(0));
+  known.setTo(0, viewCoverage == 0);  // also rebuild uncovered pixels
+
+  // 2. Run the generator.
+  Mat composed;
+  try {
+    cv::dnn::Net net = cv::dnn::readNetFromONNX(modelPath);
+    Mat rgb;
+    cv::cvtColor(view, rgb, cv::COLOR_BGR2RGB);
+    rgb.convertTo(rgb, CV_32FC3, 2.0 / 255.0, -1.0);
+    Mat mask;
+    known.convertTo(mask, CV_32F, 1.0 / 255.0);
+    const int shape[] = {1, 4, kSize, kSize};
+    Mat blob(4, shape, CV_32F);
+    std::vector<Mat> channels;
+    cv::split(rgb, channels);
+    const auto plane = [&](int c) { return Mat(kSize, kSize, CV_32F, blob.ptr<float>(0, c)); };
+    Mat(mask - 0.5).copyTo(plane(0));
+    for (int c = 0; c < 3; ++c) Mat(channels[c].mul(mask)).copyTo(plane(c + 1));
+    net.setInput(blob);
+    const Mat out = net.forward();
+    if (out.dims != 4 || out.size[1] != 3 || out.size[2] != kSize || out.size[3] != kSize) {
+      SARY_LOG("nadir inpainting: unexpected output shape");
+      return false;
+    }
+    std::vector<Mat> outChannels;
+    for (int c = 0; c < 3; ++c) {
+      Mat ch(kSize, kSize, CV_32F, const_cast<float*>(out.ptr<float>(0, c)));
+      outChannels.push_back(ch * 127.5 + 127.5);
+    }
+    Mat generated;
+    std::swap(outChannels[0], outChannels[2]);  // RGB → BGR
+    cv::merge(outChannels, generated);
+
+    // Same blend as the official pipeline: known area grown by one pixel,
+    // then softened, so generated pixels only replace the hole.
+    Mat alpha;
+    cv::dilate(known, alpha, Mat());
+    alpha.convertTo(alpha, CV_32F, 1.0 / 255.0);
+    cv::GaussianBlur(alpha, alpha, Size(7, 7), 2.0);
+    Mat viewF;
+    view.convertTo(viewF, CV_32FC3);
+    std::vector<Mat> vc, gc;
+    cv::split(viewF, vc);
+    cv::split(generated, gc);
+    for (int c = 0; c < 3; ++c) vc[c] = vc[c].mul(alpha) + gc[c].mul(1.0 - alpha);
+    cv::merge(vc, composed);
+    composed.convertTo(composed, CV_8UC3);
+    if (previewBefore != nullptr) *previewBefore = view.clone();
+    if (previewAfter != nullptr) *previewAfter = composed.clone();
+  } catch (const cv::Exception& e) {
+    SARY_LOG("nadir inpainting unavailable: %s", e.what());
+    return false;
+  }
+
+  // 3. Project the view back into the bottom rows of the panorama.
+  const double outerRad = holeRad + kFeatherDeg * kDeg;
+  const int y0 = std::max(0, static_cast<int>(std::floor((kPi - outerRad) / kPi * height)) - 1);
+  const int rows = height - y0;
+  Mat backX(rows, width, CV_32F), backY(rows, width, CV_32F), weight(rows, width, CV_32F);
+  for (int y = 0; y < rows; ++y) {
+    const double theta = (y0 + y + 0.5) / height * kPi;
+    const double fromNadir = kPi - theta;
+    const double down = -std::cos(theta);  // y component (down is +1)
+    const double radial = std::sin(theta);
+    const float w = fromNadir <= holeRad
+                        ? 1.f
+                        : static_cast<float>(std::max(0.0, 1.0 - (fromNadir - holeRad) /
+                                                                     (outerRad - holeRad)));
+    for (int x = 0; x < width; ++x) {
+      const double lon = (x + 0.5) / width * 2 * kPi - kPi;
+      const double a = radial * std::sin(lon) / down, b = radial * std::cos(lon) / down;
+      backX.at<float>(y, x) = static_cast<float>((a / tanHalf + 1) / 2 * kSize - 0.5);
+      backY.at<float>(y, x) = static_cast<float>((b / tanHalf + 1) / 2 * kSize - 0.5);
+      weight.at<float>(y, x) = down > 0 ? w : 0.f;
+    }
+  }
+  Mat patch;
+  cv::remap(composed, patch, backX, backY, cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+  Mat region = pano(Rect(0, y0, width, rows));
+  Mat regionF, patchF;
+  region.convertTo(regionF, CV_32FC3);
+  patch.convertTo(patchF, CV_32FC3);
+  std::vector<Mat> rc, pc;
+  cv::split(regionF, rc);
+  cv::split(patchF, pc);
+  for (int c = 0; c < 3; ++c) rc[c] = rc[c].mul(1.0 - weight) + pc[c].mul(weight);
+  cv::merge(rc, regionF);
+  regionF.convertTo(region, CV_8UC3);
+  coverage(Rect(0, y0, width, rows)).setTo(255, weight > 0);
+  return true;
 }
 
 /// Remplit les zones non couvertes (masque nul) par un dégradé flou des
@@ -646,6 +788,50 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
                                  corrections.end());
     }
   }
+  // Propagation des corrections : une photo non affinée (mur uni, groupe
+  // rejeté) garde la dérive du gyroscope accumulée depuis le début de la
+  // capture. Cette dérive variant lentement dans le temps, on lui applique
+  // la correction (rotation affinée × rotation capteur⁻¹) des photos
+  // affinées prises juste avant et juste après elle (les photos arrivent
+  // dans l'ordre de capture).
+  if (refinedPhotos > 0 && refinedPhotos < n) {
+    const auto correctionOf = [&](int k) {
+      Mat r64, s64;
+      cams[k].R.convertTo(r64, CV_64F);
+      sensorR[k].convertTo(s64, CV_64F);
+      return Mat(r64 * s64.t());
+    };
+    int propagated = 0;
+    for (int i = 0; i < n; ++i) {
+      if (isRefined[i]) continue;
+      int prev = -1, next = -1;
+      for (int k = i - 1; k >= 0 && prev < 0; --k) {
+        if (isRefined[k]) prev = k;
+      }
+      for (int k = i + 1; k < n && next < 0; ++k) {
+        if (isRefined[k]) next = k;
+      }
+      Mat correction;
+      if (prev >= 0 && next >= 0) {
+        // Moyenne pondérée par la proximité, ramenée à une rotation (SVD).
+        const double wp = 1.0 / (i - prev), wn = 1.0 / (next - i);
+        const Mat blend = correctionOf(prev) * wp + correctionOf(next) * wn;
+        cv::SVD svd(blend);
+        correction = svd.u * svd.vt;
+      } else {
+        correction = correctionOf(prev >= 0 ? prev : next);
+      }
+      if (rotationAngle(correction, Mat::eye(3, 3, CV_64F)) > kMaxCorrectionDeg * kDeg) {
+        continue;  // correction aberrante : on garde les capteurs
+      }
+      Mat s64;
+      sensorR[i].convertTo(s64, CV_64F);
+      Mat(correction * s64).convertTo(cams[i].R, CV_32F);
+      ++propagated;
+    }
+    SARY_LOG("%d photos non affinées corrigées par leurs voisines", propagated);
+  }
+
   // Auto-calibration : la focale réelle peut différer de celle déduite du
   // champ de vision théorique (correction de distorsion de l'appareil, qui
   // recadre l'image). Avec assez de photos affinées, leur focale médiane est
@@ -818,7 +1004,13 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
   blended.release();
   blendedMask.release();
 
-  // ── 5. Zones non couvertes et écriture ────────────────────────────────
+  // ── 5. Nadir removal, uncovered areas and writing ──────────────────────
+  if (p.nadir_mask_deg > 0 && p.inpaint_model_path != nullptr) {
+    ctx.checkCancel();
+    if (inpaintNadir(pano, coverage, p.inpaint_model_path, p.nadir_mask_deg)) {
+      ctx.lap("nadir inpainting");
+    }
+  }
   fillUncovered(pano, coverage);
   ctx.progress(0.98f);
 
@@ -871,6 +1063,54 @@ extern "C" int32_t sary_stitch(const SaryStitchParams* params, SaryStitchResult*
   result->elapsed_ms = ctx.elapsedMs();
   SARY_LOG("terminé (statut %d) en %d ms : %s", status, result->elapsed_ms, result->message);
   return status;
+}
+
+extern "C" int32_t sary_erase_nadir(const SaryNadirParams* params, char* message,
+                                    int32_t message_size) {
+  const auto fail = [&](int32_t status, const std::string& msg) {
+    if (message != nullptr && message_size > 0) {
+      std::snprintf(message, static_cast<size_t>(message_size), "%s", msg.c_str());
+    }
+    SARY_LOG("erase nadir: %s", msg.c_str());
+    return status;
+  };
+  if (params == nullptr || params->input_path == nullptr || params->output_path == nullptr ||
+      params->model_path == nullptr || params->mask_deg <= 0 || params->mask_deg >= 80) {
+    return fail(SARY_ERR_INVALID_ARGS, "Invalid parameters");
+  }
+  try {
+    cv::ocl::setUseOpenCL(false);
+    Mat pano = cv::imread(params->input_path, cv::IMREAD_COLOR);
+    if (pano.empty() || pano.cols != 2 * pano.rows) {
+      return fail(SARY_ERR_IMAGE_READ, std::string("Not a 2:1 panorama: ") + params->input_path);
+    }
+    Mat coverage(pano.size(), CV_8U, cv::Scalar(255));
+    Mat before, after;
+    const auto start = Clock::now();
+    if (!inpaintNadir(pano, coverage, params->model_path, params->mask_deg, &before, &after)) {
+      return fail(SARY_ERR_OPENCV, "Inpainting model unavailable");
+    }
+    const std::vector<int> jpeg = {cv::IMWRITE_JPEG_QUALITY,
+                                   std::min(100, std::max(1, params->jpeg_quality))};
+    if (!cv::imwrite(params->output_path, pano, jpeg)) {
+      return fail(SARY_ERR_WRITE, std::string("Cannot write ") + params->output_path);
+    }
+    if (params->preview_before_path != nullptr) {
+      cv::imwrite(params->preview_before_path, before, jpeg);
+    }
+    if (params->preview_after_path != nullptr) {
+      cv::imwrite(params->preview_after_path, after, jpeg);
+    }
+    SARY_LOG("erase nadir (%.0f°): %lld ms", params->mask_deg,
+             static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        Clock::now() - start)
+                                        .count()));
+    return fail(SARY_OK, "OK");
+  } catch (const std::bad_alloc&) {
+    return fail(SARY_ERR_OUT_OF_MEMORY, "Out of memory");
+  } catch (const cv::Exception& e) {
+    return fail(SARY_ERR_OPENCV, e.what());
+  }
 }
 
 extern "C" const char* sary_opencv_version(void) { return CV_VERSION; }

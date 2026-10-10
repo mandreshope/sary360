@@ -47,16 +47,20 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        // ABIs of the native module. Not set with --split-per-abi: Flutter
+        // then configures ABI splits itself, and both cannot coexist.
+        if (!project.hasProperty("split-per-abi")) {
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            }
         }
 
         externalNativeBuild {
             cmake {
                 arguments += listOf(
                     "-DOpenCV_DIR=$opencvSdkDir/sdk/native/jni",
-                    // Les bibliothèques statiques du SDK sont compilées
-                    // avec la libc++ partagée.
+                    // The SDK's static libraries are built against the
+                    // shared libc++.
                     "-DANDROID_STL=c++_shared",
                 )
             }

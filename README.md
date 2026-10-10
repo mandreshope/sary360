@@ -1,60 +1,75 @@
-# 🌐 Sary360
+<p align="center">
+  <img src="assets/icon/icon.png" width="128" alt="Sary360 icon">
+</p>
 
-**Application mobile Flutter pour créer des panoramas 360° immersifs entièrement hors ligne.**
+<h1 align="center">Sary360</h1>
 
-[![Flutter](https://img.shields.io/badge/Flutter-3.10+-02569B?logo=flutter)](https://flutter.dev)
-[![Dart](https://img.shields.io/badge/Dart-3.10+-0175C2?logo=dart)](https://dart.dev)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<p align="center">
+  <b>Capture 360° spherical photos on your phone, fully offline.</b><br>
+  Turn on the spot, complete the constellation, get a Photo Sphere.
+</p>
 
-![Sary360 Banner](assets/banner.png)
-
----
-
-## 📱 Aperçu
-
-Sary360 guide l'utilisateur lors de la capture de photos multiples grâce au **gyroscope**, assemble automatiquement les images en panorama **sur le téléphone**, et offre une **visualisation interactive 360°** avec gyroscope et touch.
-
-### ✨ Fonctionnalités
-
-- 🎯 **Guidage rotation intelligent** avec feedback visuel en temps réel
-- 📸 **Capture optimisée** avec verrouillage exposition et focus
-- 🔧 **Stitching offline** utilisant des algorithmes custom en pur Dart
-- 🌍 **Viewer 360° interactif** avec gyroscope et contrôles tactiles
-- ⚡ **Performances optimales** grâce aux isolates et gestion mémoire
-- 📱 **100% offline** - aucun backend, aucune connexion requise
+<p align="center">
+  <a href="https://flutter.dev"><img src="https://img.shields.io/badge/Flutter-3.47.5-02569B?logo=flutter" alt="Flutter"></a>
+  <a href="https://dart.dev"><img src="https://img.shields.io/badge/Dart-3.10+-0175C2?logo=dart" alt="Dart"></a>
+  <img src="https://img.shields.io/badge/OpenCV-4.13-5C3EE8?logo=opencv" alt="OpenCV">
+  <img src="https://img.shields.io/badge/platform-Android-3DDC84?logo=android" alt="Android">
+</p>
 
 ---
 
-## 🎥 Démo
+## Overview
 
-[Vidéo de démonstration à venir]
+Sary360 is a Flutter app inspired by the "Photo Sphere" interaction of camera
+apps, with its own **"Constellation"** visual identity: capturing a sphere
+means completing a star map.
 
-<!-- 
-![Capture Flow](assets/demo_capture.gif)
-![360 Viewer](assets/demo_viewer.gif)
--->
+The user turns on the spot while the app shows target stars projected on the
+camera preview. When a star is in the reticle and the phone is still, the
+photo is taken automatically. A native C++ OpenCV module then stitches all
+photos on the device into a 2:1 equirectangular image with Photo Sphere XMP
+metadata, ready for Google Photos or the built-in immersive viewer.
+
+### Features
+
+- **Guided capture**: target stars on a sphere, fused device orientation
+  (gyroscope + accelerometer), automatic shot after 300 ms of stillness,
+  haptics, tilt and speed warnings, captured photos drawn on the sphere.
+- **Ultra-wide support**: 26 shots with the ultra-wide lens (42 with the main
+  lens).
+- **On-device stitching** (C++ / OpenCV, FFI, isolate): sensor rotations as
+  initial guess, neighbor-only matching, bundle adjustment, gyroscope drift
+  compensation, sharp-photo seam priority, multi-band blending, progress and
+  cancellation.
+- **Floor eraser (on-device AI)**: rebuilds the area under the photographer's
+  feet with MI-GAN, with a before/after preview and undo.
+- **Gallery and immersive viewer**: slowly panning thumbnails, drag / pinch /
+  gyroscope navigation, export to the phone gallery (Sary360 album).
+- **100 % offline**: no backend, no account.
 
 ---
 
-## 🚀 Installation
+## Getting started
 
-### Prérequis
+### Prerequisites
 
-- Flutter 3.47.5 (version fixée par `.fvmrc`, utilisable avec [FVM](https://fvm.app))
-- Android SDK avec **NDK 28** et **CMake 3.22.1** (Android Studio → SDK Manager → SDK Tools)
-- **OpenCV Android SDK 4.13.0** (module C++ d'assemblage, ~320 Mo à télécharger une fois)
-- Appareil Android 8.0+ (API 26+)
+- Flutter **3.47.5** (pinned in `.fvmrc`, usable with [FVM](https://fvm.app))
+- Android SDK with **NDK 28** and **CMake 3.22.1** (Android Studio → SDK
+  Manager → SDK Tools)
+- **OpenCV Android SDK 4.13.0** (native stitching module, ~320 MB, downloaded
+  once)
+- An Android device running Android 8.0+ (API 26+) with a gyroscope
 
-### Étapes
+### Setup
 
-1. **Cloner le dépôt et installer les dépendances**
+1. **Clone and fetch dependencies**
    ```bash
    git clone https://github.com/mandreshope/sary360.git
    cd sary360
    flutter pub get
    ```
 
-2. **Installer l'OpenCV Android SDK** dans `third_party/` (ignoré par git)
+2. **Install the OpenCV Android SDK** into `third_party/` (git-ignored)
    ```bash
    mkdir -p third_party && cd third_party
    curl -L -C - -o opencv-android-sdk.zip \
@@ -62,230 +77,161 @@ Sary360 guide l'utilisateur lors de la capture de photos multiples grâce au **g
    unzip -q opencv-android-sdk.zip && rm opencv-android-sdk.zip
    cd ..
    ```
-   Le SDK peut aussi être placé ailleurs : indiquer son chemin dans
-   `android/local.properties` (`opencv.dir=/chemin/vers/OpenCV-android-sdk`) ou
-   dans la variable d'environnement `OPENCV_ANDROID_SDK`.
+   The SDK can live elsewhere: set its path in `android/local.properties`
+   (`opencv.dir=/path/to/OpenCV-android-sdk`) or in the `OPENCV_ANDROID_SDK`
+   environment variable.
 
-3. **Lancer l'application**
+3. **Run the app**
    ```bash
-   flutter run            # debug
-   flutter run --release  # performances réelles de l'assemblage
+   flutter run              # debug
+   flutter run --profile    # realistic stitching performance, logs kept
    ```
-   Gradle compile le module natif (`native/stitcher`) avec CMake pour
-   arm64-v8a, armeabi-v7a et x86_64, en liant OpenCV en statique.
+   Gradle builds the native module (`native/stitcher`) with CMake for
+   arm64-v8a, armeabi-v7a and x86_64, linking OpenCV statically.
 
-### Module natif d'assemblage
+### Release builds
 
-| Élément | Emplacement |
-|---------|-------------|
-| Interface C (FFI) | `native/stitcher/include/sary_stitcher.h` |
-| Pipeline OpenCV (`cv::detail`) | `native/stitcher/src/sary_stitcher.cpp` |
-| Build CMake | `native/stitcher/CMakeLists.txt` (appelé par `android/app/build.gradle.kts`) |
-| Bindings Dart générés | `lib/data/native/sary_stitcher_bindings.g.dart` |
+```bash
+./scripts/build.sh                     # interactive
+./scripts/build.sh android split n     # one APK per ABI
+./scripts/build.sh android aab n       # Play Store bundle
+```
 
-Après une modification de l'en-tête C, régénérer les bindings (libclang requis,
-fourni par Xcode sur macOS) :
+Release signing reads `android/key.properties` (`storePassword`,
+`keyPassword`, `keyAlias`, `storeFile=../key.jks`) and `android/key.jks`, both
+git-ignored. Without them, the release is signed with the debug key.
+
+---
+
+## How it works
+
+### 1. Guided capture
+
+- An Android `EventChannel` streams the fused **GAME_ROTATION_VECTOR**
+  orientation (gyroscope + accelerometer, no magnetometer, so no heading jumps
+  near metal) as quaternions; other platforms fall back to raw sensors.
+- Targets are rings of stars (horizon, ±45°, zenith, nadir). A target is "in
+  the reticle" by angular distance, so the poles work like any other target.
+- After 300 ms of stillness the photo is taken and the averaged quaternion is
+  stored with it. Focus is locked after the first shot.
+- Each capture writes a `session.json` manifest (measured quaternions, capture
+  order), which lets developers replay a stitching exactly.
+
+### 2. Stitching (C++ / OpenCV module)
+
+Runs on the phone in a dedicated isolate, with progress and cancellation:
+
+1. **Initial cameras**: rotation measured by the sensors for each photo, focal
+   length derived from the field of view.
+2. **ORB keypoints** and matching of **neighboring photos only**.
+3. **Bundle adjustment** (`BundleAdjusterRay`) per group of connected photos,
+   kept only if it reduces the matched-ray error; unrefined photos receive the
+   correction of their neighbors in capture order (gyroscope drift).
+4. **Focal self-calibration** and **seam priority to sharp photos**.
+5. **Spherical projection**, exposure compensation
+   (`BlocksGainCompensator`), graph-cut seams, multi-band blending.
+6. **2:1 equirectangular image** (4096 × 2048), uncovered areas filled with a
+   blurred gradient, Photo Sphere (GPano) XMP metadata.
+
+### 3. Floor eraser (on-device AI)
+
+From the viewer, the **Sol** button unfolds the floor around the nadir into a
+top-down view and rebuilds a disc of the chosen radius with the **MI-GAN**
+inpainting model (ICCV 2023, Picsart AI Research, MIT license), run by OpenCV
+`dnn` in about 2 s. A before/after preview lets the user check the result
+before applying, and the original image is kept so it can be restored.
+
+### 4. Viewing and sharing
+
+- Immersive viewer: drag to look around, pinch to zoom, optional gyroscope,
+  recenter, info sheet.
+- Export to the phone gallery (MediaStore / Photos) with the XMP metadata, so
+  Google Photos can open the image as a 360° panorama.
+
+---
+
+## Architecture
+
+```
+lib/
+├── core/            # theme, router, math (quaternions, projections), widgets
+├── domain/          # models, capture session logic, interfaces
+├── data/            # camera, orientation sources, stitching (FFI), repositories
+└── presentation/    # pages, controllers (Riverpod), widgets
+native/stitcher/     # C++ stitching module (OpenCV cv::detail + dnn)
+android/.../OrientationStreamHandler.kt   # fused orientation EventChannel
+```
+
+- Layered architecture (presentation / domain / data), **Riverpod** for state,
+  **go_router** for navigation.
+- Heavy work runs off the UI thread: native stitching and AI inpainting in
+  isolates; the ~50 Hz capture scene is driven by a `ValueNotifier` listened to
+  directly by a `CustomPainter`.
+
+### Native module
+
+| Item | Location |
+|------|----------|
+| C interface (FFI) | `native/stitcher/include/sary_stitcher.h` |
+| OpenCV pipeline | `native/stitcher/src/sary_stitcher.cpp` |
+| CMake build | `native/stitcher/CMakeLists.txt` (called by `android/app/build.gradle.kts`) |
+| Generated Dart bindings | `lib/data/native/sary_stitcher_bindings.g.dart` |
+| Command-line test tool | `native/stitcher/tools/stitch_cli.cpp` (CMake option `-DSARY_BUILD_CLI=ON`) |
+
+After changing the C header, regenerate the bindings (libclang required,
+shipped with Xcode on macOS):
+
 ```bash
 dart run ffigen --config ffigen.yaml
 ```
 
-Pour tester le pipeline hors de l'app sur un appareil branché, un outil en ligne
-de commande est disponible (`native/stitcher/tools/stitch_cli.cpp`, option CMake
-`-DSARY_BUILD_CLI=ON`).
+---
+
+## Tech stack
+
+| Area | Packages / tools |
+|------|------------------|
+| Framework | Flutter 3.47.5, Dart 3.10 |
+| State & navigation | flutter_riverpod, go_router, shared_preferences |
+| Camera & sensors | camera, Android rotation vector (EventChannel), sensors_plus (fallback) |
+| Image processing | OpenCV 4.13 (C++, via dart:ffi + ffigen), MI-GAN (OpenCV dnn) |
+| 360° viewer | flutter_cube (local fork of the panorama widget) |
+| UI | google_fonts (Space Grotesk, Manrope), custom painters |
+| Export | gal (gallery), Photo Sphere XMP |
 
 ---
 
-## 🏗️ Architecture
-
-```
-lib/
-├── core/              # Constantes et utilitaires
-├── data/              # Services (caméra, stitching)
-├── domain/            # Modèles métier
-└── presentation/      # UI (pages, viewmodels, widgets)
-```
-
-**Patterns utilisés :**
-- Clean Architecture (domain/data/presentation)
-- MVVM avec Riverpod
-- Service Layer
-- Isolates pour traitement lourd
-
-[Voir DOCUMENTATION.md pour détails complets](DOCUMENTATION.md)
-
----
-
-## 📸 Comment ça marche ?
-
-### 1. Capture Guidée
-
-L'utilisateur capture **6 photos** en tournant à 360° :
-
-- Le gyroscope track la rotation en temps réel
-- Un indicateur visuel circulaire guide vers chaque angle cible (60° de distance)
-- Le bouton de capture s'active uniquement quand l'angle est correct (±10°)
-- L'exposition et le focus sont verrouillés pour cohérence
-
-### 2. Assemblage (module C++ OpenCV)
-
-Le traitement se fait sur le téléphone, dans un isolate dédié, avec progression
-et annulation :
-
-1. **Points de départ** : rotation de chaque photo mesurée par les capteurs au
-   déclenchement (quaternion), focale déduite de l'angle de vue.
-2. **Points-clés ORB** et mise en correspondance des **seules photos voisines**.
-3. **Bundle adjustment** (`BundleAdjusterRay`) par groupe de photos reliées,
-   conservé seulement s'il réduit l'écart entre les rayons des points appariés ;
-   sinon, rotations des capteurs.
-4. **Projection sphérique**, compensation d'exposition (`BlocksGainCompensator`),
-   raccords (`GraphCutSeamFinder`), fusion multibande.
-5. **Image équirectangulaire 2:1** (4096 × 2048), zones non couvertes remplies
-   par un dégradé flou, métadonnées XMP Photo Sphere.
-
-### 3. Visualisation 360°
-
-- Navigation à 360° avec gyroscope et touch
-- Zoom et inertie fluide
-- Aucune connexion internet requise
-
----
-
-## 🛠️ Technologies
-
-| Catégorie | Packages |
-|-----------|----------|
-| **Framework** | Flutter 3.10+ |
-| **State Management** | flutter_riverpod ^2.6.1 |
-| **Caméra** | camera ^0.10.6 |
-| **Capteurs** | sensors_plus ^6.0.1 |
-| **Traitement Image** | image ^4.3.0 (pur Dart) |
-| **Viewer 360°** | flutter_cube ^0.1.1 (forked locally), dchs_motion_sensors ^2.0.1 |
-| **Permissions** | permission_handler ^11.3.1 |
-| **Storage** | path_provider ^2.1.4 |
-
----
-
-## 📊 Performances
-
-| Métrique | Valeur |
-|----------|--------|
-| **Temps de stitching** | <10s (haut de gamme), 15-30s (milieu de gamme) |
-| **Taille panorama** | ~2-4 MB (JPEG quality 85%) |
-| **Résolution finale** | ~11520x1080 (6 photos × 1920px) |
-| **Mémoire utilisée** | ~200-400 MB pendant stitching |
-| **Taille APK** | ~25-30 MB |
-
----
-
-## 🎨 Screenshots
-
-<!-- Ajouter vos screenshots ici
-| Home | Capture | Viewer |
-|------|---------|--------|
-| ![Home](assets/screenshot_home.png) | ![Capture](assets/screenshot_capture.png) | ![Viewer](assets/screenshot_viewer.png) |
--->
-
----
-
-## 🧪 Tests
+## Development
 
 ```bash
-# Tests unitaires
-flutter test
-
-# Tests d'intégration
-flutter test integration_test/
-
-# Analyse de code
-flutter analyze
+flutter analyze      # must report "No issues found!"
+flutter test         # unit and widget tests (runs on macOS)
 ```
 
----
+The tests cover orientation math (quaternions, frame conversions), screen
+projection, the capture session logic, settings persistence, onboarding and
+viewer behavior.
 
-## 📝 Configuration
-
-### Android (obligatoire)
-
-Ajouter les permissions dans `android/app/src/main/AndroidManifest.xml` :
-
-```xml
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-feature android:name="android.hardware.camera" android:required="true" />
-<uses-feature android:name="android.hardware.sensor.gyroscope" android:required="true" />
-```
-
-### Personnalisation
-
-Modifiez les constantes dans `lib/core/constants/app_constants.dart` :
-
-```dart
-static const int numberOfPhotos = 6;        // Nombre de photos
-static const int maxImageWidth = 1920;      // Résolution max
-static const int jpegQuality = 85;          // Qualité JPEG (0-100)
-static const int overlapPixels = 100;       // Chevauchement
-```
+Project conventions and tooling for contributors and AI assistants live in
+[`CLAUDE.md`](CLAUDE.md) and `.claude/skills/` (on-device stitching tests,
+FFI bindings, app icon, device diagnostics).
 
 ---
 
-## 🗺️ Roadmap
+## Credits
 
-- [x] MVP : Capture guidée + stitching simple + viewer
-- [ ] **Phase 2** : Feature detection, multi-row stitching, HDR
-- [ ] **Phase 3** : Hotspots interactifs, navigation multi-panoramas, export
-- [ ] **Phase 4** : Mode VR, reconstruction 3D, AR
-
-[Voir DOCUMENTATION.md pour roadmap détaillée](DOCUMENTATION.md)
-
----
-
-## 🤝 Contribution
-
-Les contributions sont les bienvenues !
-
-1. Fork le projet
-2. Créez votre branche (`git checkout -b feature/AmazingFeature`)
-3. Commit vos changements (`git commit -m 'Add some AmazingFeature'`)
-4. Push vers la branche (`git push origin feature/AmazingFeature`)
-5. Ouvrez une Pull Request
+- [OpenCV](https://opencv.org) — stitching pipeline and `dnn` runtime
+  (Apache 2.0)
+- [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) — inpainting model,
+  © 2024 Picsart AI Research (PAIR), MIT license; ONNX generator extracted by
+  [FreeHugsForRobots/ps-inpaint-migan](https://huggingface.co/FreeHugsForRobots/ps-inpaint-migan)
+- [flutter_cube](https://pub.dev/packages/flutter_cube) — 3D rendering of the
+  360° viewer
+- [gal](https://pub.dev/packages/gal), [camera](https://pub.dev/packages/camera),
+  [sensors_plus](https://pub.dev/packages/sensors_plus) and the Flutter team
 
 ---
 
-## 📄 Licence
+## Author
 
-Distribué sous licence MIT. Voir `LICENSE` pour plus d'informations.
-
----
-
-## 👤 Auteur
-
-**Votre Nom**
-
-- Portfolio: [votre-site.com](#)
-- LinkedIn: [linkedin.com/in/votre-profil](#)
-- GitHub: [@votre-username](https://github.com/votre-username)
-
----
-
-## 🙏 Remerciements
-
-- [Flutter](https://flutter.dev) - Framework
-- [image package](https://pub.dev/packages/image) - Traitement d'images en pur Dart
-- [panorama_viewer](https://pub.dev/packages/panorama_viewer) - Viewer 360°
-- [sensors_plus](https://pub.dev/packages/sensors_plus) - Accès gyroscope
-
----
-
-## 📚 Documentation Complète
-
-Pour une documentation technique détaillée, voir [DOCUMENTATION.md](DOCUMENTATION.md) :
-
-- Architecture complète
-- Explications du code
-- Bonnes pratiques de performance
-- Conseils photo
-- Limites techniques
-- Guide développeur
-
----
-
-**Fait avec ❤️ et Flutter**
+**Randrianarinjaka Mandresy** — [@mandreshope](https://github.com/mandreshope)

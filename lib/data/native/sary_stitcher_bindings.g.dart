@@ -23,6 +23,32 @@ class SaryStitcherBindings {
     ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) lookup,
   ) : _lookup = lookup;
 
+  /// Rebuilds the floor around the nadir of a panorama (photographer's feet,
+  /// tripod, shadow) with the MI-GAN inpainting model. Returns a SARY_* code;
+  /// a message (UTF-8) is written to [message] when not NULL.
+  int sary_erase_nadir(
+    ffi.Pointer<SaryNadirParams> params,
+    ffi.Pointer<ffi.Char> message,
+    int message_size,
+  ) {
+    return _sary_erase_nadir(params, message, message_size);
+  }
+
+  late final _sary_erase_nadirPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<SaryNadirParams>,
+            ffi.Pointer<ffi.Char>,
+            ffi.Int32,
+          )
+        >
+      >('sary_erase_nadir');
+  late final _sary_erase_nadir = _sary_erase_nadirPtr
+      .asFunction<
+        int Function(ffi.Pointer<SaryNadirParams>, ffi.Pointer<ffi.Char>, int)
+      >();
+
   /// Version d'OpenCV liée au module (chaîne statique).
   ffi.Pointer<ffi.Char> sary_opencv_version() {
     return _sary_opencv_version();
@@ -76,6 +102,50 @@ const int SARY_ERR_WRITE = 6;
 
 const int SARY_OK = 0;
 
+/// Parameters of a manual nadir removal on an existing panorama.
+final class SaryNadirParams extends ffi.Struct {
+  /// Equirectangular (2:1) JPEG to edit.
+  external ffi.Pointer<ffi.Char> input_path;
+
+  /// Edited JPEG (may equal input_path; XMP metadata is not preserved).
+  external ffi.Pointer<ffi.Char> output_path;
+
+  /// MI-GAN 512 generator (ONNX).
+  external ffi.Pointer<ffi.Char> model_path;
+
+  /// Angular radius in degrees of the disc rebuilt around the nadir (0..80).
+  @ffi.Float()
+  external double mask_deg;
+
+  /// JPEG quality (1-100).
+  @ffi.Int32()
+  external int jpeg_quality;
+
+  /// Optional 512 × 512 top-down previews of the floor before / after
+  /// (may be NULL).
+  external ffi.Pointer<ffi.Char> preview_before_path;
+
+  external ffi.Pointer<ffi.Char> preview_after_path;
+
+  static ffi.Pointer<SaryNadirParams> $allocate(
+    ffi.Allocator $allocator, {
+    required ffi.Pointer<ffi.Char> input_path,
+    required ffi.Pointer<ffi.Char> output_path,
+    required ffi.Pointer<ffi.Char> model_path,
+    required double mask_deg,
+    required int jpeg_quality,
+    required ffi.Pointer<ffi.Char> preview_before_path,
+    required ffi.Pointer<ffi.Char> preview_after_path,
+  }) => $allocator<SaryNadirParams>()
+    ..ref.input_path = input_path
+    ..ref.output_path = output_path
+    ..ref.model_path = model_path
+    ..ref.mask_deg = mask_deg
+    ..ref.jpeg_quality = jpeg_quality
+    ..ref.preview_before_path = preview_before_path
+    ..ref.preview_after_path = preview_after_path;
+}
+
 /// Paramètres d'un assemblage.
 final class SaryStitchParams extends ffi.Struct {
   /// Nombre de photos.
@@ -128,6 +198,14 @@ final class SaryStitchParams extends ffi.Struct {
   @ffi.Int32()
   external int refine;
 
+  /// Nadir removal (feet, tripod, shadow): angular radius in degrees of the
+  /// disc around the nadir rebuilt by the inpainting model (<= 0: disabled).
+  @ffi.Float()
+  external double nadir_mask_deg;
+
+  /// Path of the MI-GAN 512 generator (ONNX), required when nadir_mask_deg > 0.
+  external ffi.Pointer<ffi.Char> inpaint_model_path;
+
   /// Chemin du JPEG équirectangulaire produit.
   external ffi.Pointer<ffi.Char> output_path;
 
@@ -153,6 +231,8 @@ final class SaryStitchParams extends ffi.Struct {
     required int max_features,
     required double neighbor_max_angle_deg,
     required int refine,
+    required double nadir_mask_deg,
+    required ffi.Pointer<ffi.Char> inpaint_model_path,
     required ffi.Pointer<ffi.Char> output_path,
     required ffi.Pointer<ffi.Float> progress,
     required ffi.Pointer<ffi.Int32> cancel,
@@ -169,6 +249,8 @@ final class SaryStitchParams extends ffi.Struct {
     ..ref.max_features = max_features
     ..ref.neighbor_max_angle_deg = neighbor_max_angle_deg
     ..ref.refine = refine
+    ..ref.nadir_mask_deg = nadir_mask_deg
+    ..ref.inpaint_model_path = inpaint_model_path
     ..ref.output_path = output_path
     ..ref.progress = progress
     ..ref.cancel = cancel;

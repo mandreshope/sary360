@@ -23,7 +23,7 @@ endif()
 
 set(OpenCV_STATIC ON)
 find_package(OpenCV REQUIRED
-  COMPONENTS core imgproc imgcodecs features2d flann calib3d stitching)
+  COMPONENTS core imgproc imgcodecs features2d flann calib3d stitching dnn)
 
 add_library(sary_stitcher SHARED src/sary_stitcher.cpp)
 
