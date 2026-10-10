@@ -646,6 +646,50 @@ int32_t run(Context& ctx, SaryStitchResult* result) {
                                  corrections.end());
     }
   }
+  // Propagation des corrections : une photo non affinée (mur uni, groupe
+  // rejeté) garde la dérive du gyroscope accumulée depuis le début de la
+  // capture. Cette dérive variant lentement dans le temps, on lui applique
+  // la correction (rotation affinée × rotation capteur⁻¹) des photos
+  // affinées prises juste avant et juste après elle (les photos arrivent
+  // dans l'ordre de capture).
+  if (refinedPhotos > 0 && refinedPhotos < n) {
+    const auto correctionOf = [&](int k) {
+      Mat r64, s64;
+      cams[k].R.convertTo(r64, CV_64F);
+      sensorR[k].convertTo(s64, CV_64F);
+      return Mat(r64 * s64.t());
+    };
+    int propagated = 0;
+    for (int i = 0; i < n; ++i) {
+      if (isRefined[i]) continue;
+      int prev = -1, next = -1;
+      for (int k = i - 1; k >= 0 && prev < 0; --k) {
+        if (isRefined[k]) prev = k;
+      }
+      for (int k = i + 1; k < n && next < 0; ++k) {
+        if (isRefined[k]) next = k;
+      }
+      Mat correction;
+      if (prev >= 0 && next >= 0) {
+        // Moyenne pondérée par la proximité, ramenée à une rotation (SVD).
+        const double wp = 1.0 / (i - prev), wn = 1.0 / (next - i);
+        const Mat blend = correctionOf(prev) * wp + correctionOf(next) * wn;
+        cv::SVD svd(blend);
+        correction = svd.u * svd.vt;
+      } else {
+        correction = correctionOf(prev >= 0 ? prev : next);
+      }
+      if (rotationAngle(correction, Mat::eye(3, 3, CV_64F)) > kMaxCorrectionDeg * kDeg) {
+        continue;  // correction aberrante : on garde les capteurs
+      }
+      Mat s64;
+      sensorR[i].convertTo(s64, CV_64F);
+      Mat(correction * s64).convertTo(cams[i].R, CV_32F);
+      ++propagated;
+    }
+    SARY_LOG("%d photos non affinées corrigées par leurs voisines", propagated);
+  }
+
   // Auto-calibration : la focale réelle peut différer de celle déduite du
   // champ de vision théorique (correction de distorsion de l'appareil, qui
   // recadre l'image). Avec assez de photos affinées, leur focale médiane est

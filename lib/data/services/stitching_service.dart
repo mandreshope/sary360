@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
@@ -146,9 +145,10 @@ class StitchingService {
         paths: [for (final p in photos) p.path],
         rotations: [for (final r in rotations) ...r],
         hFov: hFov,
-        // Au-delà, deux photos ne se chevauchent plus : inutile de les
-        // comparer.
-        neighborAngle: math.max(hFov, vFov) - 5,
+        // Au-delà, deux photos ne se recouvrent plus : inutile de les
+        // comparer (ex. ultra grand angle : 68°, alors que deux photos de
+        // l'horizon espacées de 72° ne se touchent pas).
+        neighborAngle: (hFov + vFov) / 2,
         outputWidth: outputWidth,
         outputPath: outputPath,
         progressAddress: progress.address,

@@ -62,7 +62,8 @@ int main(int argc, char** argv) {
   params.seam_megapix = env("SARY_SEAM_MP", 0.05f);
   params.max_features = static_cast<int32_t>(env("SARY_FEATURES", 0));
   params.compose_megapix = -1;
-  params.neighbor_max_angle_deg = 89;
+  // (hFov + vFov) / 2 comme l'app ; 68° pour l'ultra grand angle.
+  params.neighbor_max_angle_deg = env("SARY_NEIGHBOR", 68.0f);
   params.refine = refine;
   params.output_path = output.c_str();
   params.progress = &progress;
